@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { onAuthStateChanged } from 'firebase/auth';
+import { onAuthStateChanged, getRedirectResult } from 'firebase/auth'; // 加入 getRedirectResult
 import { collection, onSnapshot, orderBy, query } from 'firebase/firestore';
 import { auth, db } from './firebase/config';
 import AuthScreen    from './components/AuthScreen';
@@ -7,9 +7,16 @@ import TripSelector  from './components/TripSelector';
 import TripApp       from './components/TripApp';
 
 export default function App() {
-  const [user,          setUser]          = useState(undefined); // undefined = loading
+  const [user,          setUser]          = useState(undefined);
   const [trips,         setTrips]         = useState([]);
   const [activeTripId,  setActiveTripId]  = useState(null);
+
+  // ── 處理手機 Redirect 登入結果 ────────────────────────────────────────────
+  useEffect(() => {
+    getRedirectResult(auth).catch((err) => {
+      console.error('Redirect 登入失敗：', err);
+    });
+  }, []);
 
   // ── Auth listener ─────────────────────────────────────────────────────────
   useEffect(() => {
