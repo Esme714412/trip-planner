@@ -1,11 +1,29 @@
-import { signInWithPopup } from 'firebase/auth';
+import { signInWithPopup, signInWithRedirect, getRedirectResult } from 'firebase/auth';
 import { auth, googleProvider } from '../firebase/config';
 import { Plane } from 'lucide-react';
+import { useEffect } from 'react';
 
 export default function AuthScreen() {
+  
+  // 處理手機 Redirect 登入後回來的結果
+  useEffect(() => {
+    getRedirectResult(auth).catch((err) => {
+      console.error(err);
+      alert('登入失敗，請確認網路連線後再試。');
+    });
+  }, []);
+
   const handleGoogleLogin = async () => {
     try {
-      await signInWithPopup(auth, googleProvider);
+      const isMobile = /iPhone|iPad|Android/i.test(navigator.userAgent);
+      
+      if (isMobile) {
+        // 手機用 Redirect（Safari 相容）
+        await signInWithRedirect(auth, googleProvider);
+      } else {
+        // 電腦用 Popup
+        await signInWithPopup(auth, googleProvider);
+      }
     } catch (err) {
       alert('登入失敗，請確認網路連線後再試。');
       console.error(err);
