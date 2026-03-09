@@ -11,13 +11,7 @@ import {
   Share2,} from 'lucide-react';
 import ExpenseFormModal from './ExpenseFormModal';
 import { useConfirm } from './ConfirmModal';
-//─── users view setting ──────────────────────────────────────────────────────────────────
-const [isShareOpen,    setIsShareOpen]    = useState(false);
-const [shareEditors,   setShareEditors]   = useState(initialData.editors  || []);
-const [shareViewers,   setShareViewers]   = useState(initialData.viewers  || []);
-const [newShareEmail,  setNewShareEmail]  = useState('');
-const [newShareRole,   setNewShareRole]   = useState('viewer');
-const [shareStatus,    setShareStatus]    = useState('');
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 const TRIP_ICONS = [Plane, MapPin, Luggage, CameraIcon];
 const TRIP_EMOJIS = ['✈️', '🗺️', '🎒', '📸'];
@@ -78,6 +72,12 @@ export default function TripApp({ uid, tripId, initialData, onBack }) {
   const [editingExpense,   setEditingExpense]   = useState(null);
   const [isEditingName,    setIsEditingName]    = useState(false);
   const [saveStatus,       setSaveStatus]       = useState('saved'); // 'saving' | 'saved' | 'error'
+  const [isShareOpen,    setIsShareOpen]    = useState(false);
+  const [shareEditors,   setShareEditors]   = useState(initialData.editors  || []);
+  const [shareViewers,   setShareViewers]   = useState(initialData.viewers  || []);
+  const [newShareEmail,  setNewShareEmail]  = useState('');
+  const [newShareRole,   setNewShareRole]   = useState('viewer');
+  const [shareStatus,    setShareStatus]    = useState('');
 
   // Settings sub-state
   const [isUsersLocked,    setIsUsersLocked]    = useState(true);
@@ -398,11 +398,11 @@ const removeShareMember = async (email, role) => {
             {saveStatus === 'saved'  && <><span className="text-green-400">●</span> 已同步</>}
             {saveStatus === 'error'  && <><span className="text-red-400">●</span> 失敗</>}
           </div>
-
+          
+          <button onClick={()=>setIsShareOpen(true)} className="p-2 text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 rounded-full transition-colors shrink-0">
+            <Share2 size={22}/>
+          </button>
           <button onClick={()=>setIsSettingsOpen(true)} className="p-2 text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 rounded-full transition-colors shrink-0">
-            <button onClick={()=>setIsShareOpen(true)} className="p-2 text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 rounded-full transition-colors shrink-0">
-              <Share2 size={22}/>
-            </button>
             <Settings size={22}/>
           </button>
         </div>
