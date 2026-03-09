@@ -14,21 +14,22 @@ export default function AuthScreen() {
   }, []);
 
   const handleGoogleLogin = async () => {
-    try {
-      const isMobile = /iPhone|iPad|Android/i.test(navigator.userAgent);
-      
-      if (isMobile) {
-        // 手機用 Redirect（Safari 相容）
-        await signInWithRedirect(auth, googleProvider);
-      } else {
-        // 電腦用 Popup
-        await signInWithPopup(auth, googleProvider);
-      }
-    } catch (err) {
-      alert('登入失敗，請確認網路連線後再試。');
-      console.error(err);
+  try {
+    // 判斷是否為 LINE、FB 等內嵌 WebView
+    const isWebView = /(Line|FBAN|FBAV|Instagram)/i.test(navigator.userAgent);
+    
+    if (isWebView) {
+      // 內嵌瀏覽器用 Redirect
+      await signInWithRedirect(auth, googleProvider);
+    } else {
+      // Safari、Chrome 等一般瀏覽器直接用 Popup
+      await signInWithPopup(auth, googleProvider);
     }
-  };
+  } catch (err) {
+    alert('登入失敗，請確認網路連線後再試。');
+    console.error(err);
+  }
+};
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-100 flex flex-col items-center justify-center p-6">
