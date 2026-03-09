@@ -18,7 +18,7 @@ const DEFAULT_TRIP = {
   expenses: [],
 };
 
-export default function TripSelector({ uid, trips, onSelect }) {
+export default function TripSelector({ uid, trips, sharedTrips, onSelect }) {
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState('');
 
@@ -89,6 +89,34 @@ export default function TripSelector({ uid, trips, onSelect }) {
             </div>
           ))}
         </div>
+
+{/* 被分享的行程 */}
+{sharedTrips?.length > 0 && (
+  <div className="mt-6">
+    <h2 className="text-sm font-bold text-slate-500 mb-3 flex items-center gap-1">
+      <Users size={14}/> 分享給我的行程
+    </h2>
+    {sharedTrips.map(trip => (
+      <div
+        key={trip.tripId}
+        onClick={() => onSelect(trip.tripId)}
+        className="bg-white rounded-2xl p-4 flex items-center gap-4 cursor-pointer border border-slate-100 shadow-sm hover:border-indigo-300 hover:shadow-md transition-all group mb-3"
+      >
+        <div className="w-12 h-12 bg-purple-50 rounded-xl flex items-center justify-center text-2xl shrink-0">
+          🤝
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="font-bold text-slate-800 truncate group-hover:text-indigo-700">
+            {trip.tripId}
+          </div>
+          <div className="text-xs text-slate-400 mt-0.5">
+            {trip.sharedRole === 'editor' ? '✏️ 可編輯' : '👁 只能查看'}
+          </div>
+        </div>
+      </div>
+    ))}
+  </div>
+)}
 
         {/* Create New */}
         {creating ? (

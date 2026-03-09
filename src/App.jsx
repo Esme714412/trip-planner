@@ -1,31 +1,35 @@
 import { useState, useEffect } from 'react';
-import { onAuthStateChanged, getRedirectResult } from 'firebase/auth'; // 加入 getRedirectResult
-import { collection, onSnapshot, orderBy, query } from 'firebase/firestore';
+import { onAuthStateChanged, getRedirectResult } from 'firebase/auth';
+import { collection, onSnapshot, orderBy, query, doc, getDoc, where } from 'firebase/firestore';
 import { auth, db } from './firebase/config';
-import AuthScreen    from './components/AuthScreen';
-import TripSelector  from './components/TripSelector';
-import TripApp       from './components/TripApp';
+import AuthScreen   from './components/AuthScreen';
+import TripSelector from './components/TripSelector';
+import TripApp      from './components/TripApp';
 
 export default function App() {
-  const [user,          setUser]          = useState(undefined);
-  const [trips,         setTrips]         = useState([]);
-  const [activeTripId,  setActiveTripId]  = useState(null);
+  const [user,         setUser]         = useState(undefined);
+  const [trips,        setTrips]        = useState([]);
+  const [sharedTrips,  setSharedTrips]  = useState([]);
+  const [activeTripId, setActiveTripId] = useState(null);
+  const [activeTripOwner, setActiveTripOwner] = useState(null); // 行程擁有者 uid
+  const [redirectDone, setRedirectDone] = useState(false);
 
-  // ── 處理手機 Redirect 登入結果 ────────────────────────────────────────────
+  // ── Redirect 處理 ─────────────────────────────────────────────────────────
   useEffect(() => {
-    getRedirectResult(auth).catch((err) => {
-      console.error('Redirect 登入失敗：', err);
-    });
+    getRedirectResult(auth)
+      .then(result => { if (result?.user) console.log('Redirect 登入成功'); })
+      .catch(err => console.error(err))
+      .finally(() => setRedirectDone(true));
   }, []);
 
   // ── Auth listener ─────────────────────────────────────────────────────────
   useEffect(() => {
+    if (!redirectDone) return;
     const unsub = onAuthStateChanged(auth, u => setUser(u ?? null));
     return unsub;
-  }, []);
+  }, [redirectDone]);
 
-
-  // ── Trips listener (only when logged in) ──────────────────────────────────
+  // ── 自己的行程 ────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!user) { setTrips([]); return; }
     const q = query(collection(db, 'users', user.uid, 'trips'), orderBy('createdAt', 'desc'));
@@ -35,8 +39,31 @@ export default function App() {
     return unsub;
   }, [user]);
 
-  // ── Loading screen ────────────────────────────────────────────────────────
-  if (user === undefined) {
+  // ── 被分享的行程 ──────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!user) { setSharedTrips([]); return; }
+
+    // 查詢 editors 或 viewers 包含目前使用者 uid 的 sharedTrips
+    const editorsQ  = query(collection(db, 'sharedTrips'), where('editors', 'array-contains', user.uid));
+    const viewersQ  = query(collection(db, 'sharedTrips'), where('viewers', 'array-contains', user.uid));
+
+    const results = {};
+
+    const unsubE = onSnapshot(editorsQ, snap => {
+      snap.docs.forEach(d => { results[d.id] = { ...d.data(), sharedRole: 'editor' }; });
+      setSharedTrips(Object.values(results));
+    });
+
+    const unsubV = onSnapshot(viewersQ, snap => {
+      snap.docs.forEach(d => { results[d.id] = { ...d.data(), sharedRole: 'viewer' }; });
+      setSharedTrips(Object.values(results));
+    });
+
+    return () => { unsubE(); unsubV(); };
+  }, [user]);
+
+  // ── Loading ───────────────────────────────────────────────────────────────
+  if (!redirectDone || user === undefined) {
     return (
       <div className="min-h-screen bg-indigo-50 flex items-center justify-center">
         <div className="text-indigo-400 text-4xl animate-pulse">✈️</div>
@@ -44,32 +71,35 @@ export default function App() {
     );
   }
 
-  // ── Not logged in ─────────────────────────────────────────────────────────
   if (!user) return <AuthScreen />;
 
-  // ── Active trip ───────────────────────────────────────────────────────────
+  // ── 進入行程 ──────────────────────────────────────────────────────────────
   if (activeTripId) {
-    const tripData = trips.find(t => t.id === activeTripId);
-    if (!tripData) {
-      // Trip was deleted elsewhere — return to selector
-      setActiveTripId(null);
-      return null;
-    }
+    const myTrip     = trips.find(t => t.id === activeTripId);
+    const sharedTrip = sharedTrips.find(t => t.tripId === activeTripId);
+
+    if (!myTrip && !sharedTrip) { setActiveTripId(null); return null; }
+
+    const ownerUid = myTrip ? user.uid : sharedTrip.ownerUid;
+    const tripData = myTrip || sharedTrip;
+    const isReadOnly = sharedTrip?.sharedRole === 'viewer';
+
     return (
       <TripApp
-        uid={user.uid}
+        uid={ownerUid}
         tripId={activeTripId}
         initialData={tripData}
+        readOnly={isReadOnly}
         onBack={() => setActiveTripId(null)}
       />
     );
   }
 
-  // ── Trip selector ─────────────────────────────────────────────────────────
   return (
     <TripSelector
       uid={user.uid}
       trips={trips}
+      sharedTrips={sharedTrips}
       onSelect={id => setActiveTripId(id)}
     />
   );
