@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { onAuthStateChanged, getRedirectResult } from 'firebase/auth'; // 加入 getRedirectResult
+import { onAuthStateChanged, getRedirectResult } from 'firebase/auth';
 import { collection, onSnapshot, orderBy, query } from 'firebase/firestore';
 import { auth, db } from './firebase/config';
 import AuthScreen    from './components/AuthScreen';
@@ -10,21 +10,23 @@ export default function App() {
   const [user,          setUser]          = useState(undefined);
   const [trips,         setTrips]         = useState([]);
   const [activeTripId,  setActiveTripId]  = useState(null);
+  const [redirectDone,  setRedirectDone]  = useState(false);
 
-  // ── 處理手機 Redirect 登入結果 ────────────────────────────────────────────
   useEffect(() => {
-    getRedirectResult(auth).catch((err) => {
-      console.error('Redirect 登入失敗：', err);
-    });
+    getRedirectResult(auth)
+      .then((result) => {
+        if (result?.user) console.log('Redirect 登入成功：', result.user.email);
+      })
+      .catch((err) => console.error('Redirect 登入失敗：', err))
+      .finally(() => setRedirectDone(true));
   }, []);
 
-  // ── Auth listener ─────────────────────────────────────────────────────────
   useEffect(() => {
+    if (!redirectDone) return;
     const unsub = onAuthStateChanged(auth, u => setUser(u ?? null));
     return unsub;
-  }, []);
+  }, [redirectDone]);
 
-  // ── Trips listener (only when logged in) ──────────────────────────────────
   useEffect(() => {
     if (!user) { setTrips([]); return; }
     const q = query(collection(db, 'users', user.uid, 'trips'), orderBy('createdAt', 'desc'));
@@ -34,8 +36,7 @@ export default function App() {
     return unsub;
   }, [user]);
 
-  // ── Loading screen ────────────────────────────────────────────────────────
-  if (user === undefined) {
+  if (!redirectDone || user === undefined) {
     return (
       <div className="min-h-screen bg-indigo-50 flex items-center justify-center">
         <div className="text-indigo-400 text-4xl animate-pulse">✈️</div>
@@ -43,17 +44,11 @@ export default function App() {
     );
   }
 
-  // ── Not logged in ─────────────────────────────────────────────────────────
   if (!user) return <AuthScreen />;
 
-  // ── Active trip ───────────────────────────────────────────────────────────
   if (activeTripId) {
     const tripData = trips.find(t => t.id === activeTripId);
-    if (!tripData) {
-      // Trip was deleted elsewhere — return to selector
-      setActiveTripId(null);
-      return null;
-    }
+    if (!tripData) { setActiveTripId(null); return null; }
     return (
       <TripApp
         uid={user.uid}
@@ -64,7 +59,6 @@ export default function App() {
     );
   }
 
-  // ── Trip selector ─────────────────────────────────────────────────────────
   return (
     <TripSelector
       uid={user.uid}
