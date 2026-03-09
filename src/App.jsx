@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { onAuthStateChanged, getRedirectResult } from 'firebase/auth';
-import { collection, onSnapshot, orderBy, query, doc, getDoc, where } from 'firebase/firestore';
+import { collection, onSnapshot, orderBy, query, where, setDoc, doc } from 'firebase/firestore';
 import { auth, db } from './firebase/config';
 import AuthScreen   from './components/AuthScreen';
 import TripSelector from './components/TripSelector';
@@ -25,9 +25,20 @@ export default function App() {
   // ── Auth listener ─────────────────────────────────────────────────────────
   useEffect(() => {
     if (!redirectDone) return;
-    const unsub = onAuthStateChanged(auth, u => setUser(u ?? null));
+    const unsub = onAuthStateChanged(auth, async (u) => {
+      setUser(u ?? null);
+      
+      // 登入時把 email → uid 對應存到 Firestore
+      if (u) {
+        await setDoc(doc(db, 'userProfiles', u.uid), {
+          uid: u.uid,
+          email: u.email,
+          displayName: u.displayName || '',
+        }, { merge: true });
+      }
+    });
     return unsub;
-  }, [redirectDone]);
+  }, [redirectDone]);;
 
   // ── 自己的行程 ────────────────────────────────────────────────────────────
   useEffect(() => {

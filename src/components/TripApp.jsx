@@ -1,4 +1,4 @@
-import { doc, updateDoc, serverTimestamp, setDoc, deleteDoc } from 'firebase/firestore';
+import { doc, updateDoc, serverTimestamp, setDoc, getDocs, collection, query, where } from 'firebase/firestore';
 import { Share2 } from 'lucide-react';
 import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import { db } from '../firebase/config';
@@ -299,30 +299,50 @@ export default function TripApp({ uid, tripId, initialData, onBack }) {
 const addShareMember = async () => {
   const email = newShareEmail.trim().toLowerCase();
   if (!email || !email.includes('@')) { setShareStatus('請輸入正確的 Email'); return; }
-  if (shareEditors.includes(email) || shareViewers.includes(email)) { setShareStatus('此 Email 已在名單中'); return; }
 
-  const newEditors = newShareRole === 'editor' ? [...shareEditors, email] : shareEditors;
-  const newViewers = newShareRole === 'viewer' ? [...shareViewers, email] : shareViewers;
+  setShareStatus('🔍 查詢中...');
 
   try {
-    // 更新行程文件的權限
+    // 用 Email 查詢 uid
+    const profileQuery = query(
+      collection(db, 'userProfiles'),
+      where('email', '==', email)
+    );
+    const { getDocs } = await import('firebase/firestore');
+    const snap = await getDocs(profileQuery);
+
+    if (snap.empty) {
+      setShareStatus('❌ 找不到此 Email，對方需要先登入過 App');
+      return;
+    }
+
+    const targetUid = snap.docs[0].data().uid;
+
+    if (targetUid === uid) { setShareStatus('❌ 不能分享給自己'); return; }
+    if (shareEditors.includes(targetUid) || shareViewers.includes(targetUid)) {
+      setShareStatus('此帳號已在名單中'); return;
+    }
+
+    const newEditors = newShareRole === 'editor' ? [...shareEditors, targetUid] : shareEditors;
+    const newViewers = newShareRole === 'viewer' ? [...shareViewers, targetUid] : shareViewers;
+
     await updateDoc(doc(db, 'users', uid, 'trips', tripId), {
       editors: newEditors,
       viewers: newViewers,
       ownerId: uid,
     });
-    // 在 sharedTrips 建立索引，讓對方能查詢到
     await setDoc(doc(db, 'sharedTrips', tripId), {
-      ownerUid: uid,
-      tripId,
+      ownerUid: uid, tripId,
       editors: newEditors,
       viewers: newViewers,
     });
+
     setShareEditors(newEditors);
     setShareViewers(newViewers);
     setNewShareEmail('');
     setShareStatus(`✅ 已新增 ${email}`);
   } catch (e) {
+    console.error(e);
     setShareStatus('❌ 儲存失敗，請再試一次');
   }
 };
