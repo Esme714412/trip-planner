@@ -298,24 +298,20 @@ export default function TripApp({ uid, tripId, initialData, onBack }) {
 const addShareMember = async () => {
   const email = newShareEmail.trim().toLowerCase();
   if (!email || !email.includes('@')) { setShareStatus('請輸入正確的 Email'); return; }
-
   setShareStatus('🔍 查詢中...');
 
   try {
     // 用 Email 查詢 uid
-    const profileQuery = query(
-      collection(db, 'userProfiles'),
-      where('email', '==', email)
-    );
-    const { getDocs } = await import('firebase/firestore');
-    const snap = await getDocs(profileQuery);
+    const profileQuery = query(collection(db, 'userProfiles'), where('email', '==', email));
+    const snap = await getDocs(profileQuery); // ← 用已 import 的 getDocs，不要動態 import
 
     if (snap.empty) {
       setShareStatus('❌ 找不到此 Email，對方需要先登入過 App');
       return;
     }
 
-    const targetUid = snap.docs[0].data().uid;
+    const targetProfile = snap.docs[0].data();
+    const targetUid = targetProfile.uid;
 
     if (targetUid === uid) { setShareStatus('❌ 不能分享給自己'); return; }
     if (shareEditors.includes(targetUid) || shareViewers.includes(targetUid)) {
@@ -335,6 +331,16 @@ const addShareMember = async () => {
       editors: newEditors,
       viewers: newViewers,
     });
+
+    // editor 自動加入參與人員
+    if (newShareRole === 'editor') {
+      const memberName = targetProfile.displayName || email.split('@')[0];
+      if (!users.includes(memberName)) {
+        const updatedUsers = [...users, memberName];
+        setUsers(updatedUsers);
+        await updateDoc(doc(db, 'users', uid, 'trips', tripId), { users: updatedUsers });
+      }
+    }
 
     setShareEditors(newEditors);
     setShareViewers(newViewers);
