@@ -1,6 +1,5 @@
-import { doc, updateDoc, serverTimestamp, setDoc, getDocs, collection, query, where } from 'firebase/firestore';
-import { Share2 } from 'lucide-react';
 import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
+import { doc, updateDoc, serverTimestamp, setDoc, getDocs, collection, query, where } from 'firebase/firestore';
 import { db } from '../firebase/config';
 import {
   MapPin, Clock, Globe, ShoppingBag, Ticket, Navigation,
@@ -9,7 +8,7 @@ import {
   ListTodo, ToggleLeft, ToggleRight, Calendar,
   Settings, Lock, Unlock, Tag, Save, Star, Plane, Luggage,
   Camera as CameraIcon, ArrowLeft, Wifi, WifiOff, ArrowRight,
-} from 'lucide-react';
+  Share2,} from 'lucide-react';
 import ExpenseFormModal from './ExpenseFormModal';
 import { useConfirm } from './ConfirmModal';
 //─── users view setting ──────────────────────────────────────────────────────────────────
