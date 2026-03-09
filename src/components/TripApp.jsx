@@ -72,12 +72,16 @@ export default function TripApp({ uid, tripId, initialData, onBack }) {
   const [editingExpense,   setEditingExpense]   = useState(null);
   const [isEditingName,    setIsEditingName]    = useState(false);
   const [saveStatus,       setSaveStatus]       = useState('saved'); // 'saving' | 'saved' | 'error'
+
+  // ── Share state ───────────────────────────────────────────────────────────
   const [isShareOpen,    setIsShareOpen]    = useState(false);
   const [shareEditors,   setShareEditors]   = useState(initialData.editors  || []);
   const [shareViewers,   setShareViewers]   = useState(initialData.viewers  || []);
   const [newShareEmail,  setNewShareEmail]  = useState('');
   const [newShareRole,   setNewShareRole]   = useState('viewer');
   const [shareStatus,    setShareStatus]    = useState('');
+  // uid → email 對照表，用來在 UI 顯示 email 而不是 uid
+  const [shareEmailMap,  setShareEmailMap]  = useState({});
 
   // Settings sub-state
   const [isUsersLocked,    setIsUsersLocked]    = useState(true);
@@ -295,82 +299,101 @@ export default function TripApp({ uid, tripId, initialData, onBack }) {
   };
 
   // ── Share management ──────────────────────────────────────────────────────
-const addShareMember = async () => {
-  const email = newShareEmail.trim().toLowerCase();
-  if (!email || !email.includes('@')) { setShareStatus('請輸入正確的 Email'); return; }
-  setShareStatus('🔍 查詢中...');
+  // 【修正1】所有資料一次寫入，避免第二次 updateDoc 覆蓋第一次造成衝突
+  // 【修正2】移除動態 import，直接用頂部已 import 的 getDocs
+  // 【修正3】snap 移到 try 裡面才使用，避免 undefined 錯誤
+  // 【修正4】成功後更新 shareEmailMap，讓 UI 顯示 email 而非 uid
+  const addShareMember = async () => {
+    const email = newShareEmail.trim().toLowerCase();
+    if (!email || !email.includes('@')) { setShareStatus('請輸入正確的 Email'); return; }
+    setShareStatus('🔍 查詢中...');
 
-  try {
-    // 用 Email 查詢 uid
-    const profileQuery = query(collection(db, 'userProfiles'), where('email', '==', email));
-    const snap = await getDocs(profileQuery); // ← 用已 import 的 getDocs，不要動態 import
+    try {
+      const profileQuery = query(collection(db, 'userProfiles'), where('email', '==', email));
+      const snap = await getDocs(profileQuery);
 
-    if (snap.empty) {
-      setShareStatus('❌ 找不到此 Email，對方需要先登入過 App');
-      return;
-    }
-
-    const targetProfile = snap.docs[0].data();
-    const targetUid = targetProfile.uid;
-
-    if (targetUid === uid) { setShareStatus('❌ 不能分享給自己'); return; }
-    if (shareEditors.includes(targetUid) || shareViewers.includes(targetUid)) {
-      setShareStatus('此帳號已在名單中'); return;
-    }
-
-    const newEditors = newShareRole === 'editor' ? [...shareEditors, targetUid] : shareEditors;
-    const newViewers = newShareRole === 'viewer' ? [...shareViewers, targetUid] : shareViewers;
-
-    await updateDoc(doc(db, 'users', uid, 'trips', tripId), {
-      editors: newEditors,
-      viewers: newViewers,
-      ownerId: uid,
-    });
-    await setDoc(doc(db, 'sharedTrips', tripId), {
-      ownerUid: uid, tripId,
-      editors: newEditors,
-      viewers: newViewers,
-    });
-
-    // editor 自動加入參與人員
-    if (newShareRole === 'editor') {
-      const memberName = targetProfile.displayName || email.split('@')[0];
-      if (!users.includes(memberName)) {
-        const updatedUsers = [...users, memberName];
-        setUsers(updatedUsers);
-        await updateDoc(doc(db, 'users', uid, 'trips', tripId), { users: updatedUsers });
+      if (snap.empty) {
+        setShareStatus('❌ 找不到此 Email，對方需要先登入過 App');
+        return;
       }
+
+      const targetProfile = snap.docs[0].data();
+      const targetUid = targetProfile.uid;
+
+      if (targetUid === uid) { setShareStatus('❌ 不能分享給自己'); return; }
+      if (shareEditors.includes(targetUid) || shareViewers.includes(targetUid)) {
+        setShareStatus('此帳號已在名單中'); return;
+      }
+
+      const newEditors = newShareRole === 'editor' ? [...shareEditors, targetUid] : shareEditors;
+      const newViewers = newShareRole === 'viewer' ? [...shareViewers, targetUid] : shareViewers;
+
+      // editor 自動加入參與人員（計算好，一起寫入）
+      let updatedUsers = [...users];
+      if (newShareRole === 'editor') {
+        const memberName = targetProfile.displayName || email.split('@')[0];
+        if (!updatedUsers.includes(memberName)) {
+          updatedUsers = [...updatedUsers, memberName];
+        }
+      }
+
+      // 【關鍵】一次寫入所有欄位，不要分開兩次 updateDoc
+      await updateDoc(doc(db, 'users', uid, 'trips', tripId), {
+        editors: newEditors,
+        viewers: newViewers,
+        ownerId: uid,
+        users: updatedUsers,
+      });
+
+      await setDoc(doc(db, 'sharedTrips', tripId), {
+        ownerUid: uid,
+        tripId,
+        editors: newEditors,
+        viewers: newViewers,
+      });
+
+      // 更新所有 state
+      setShareEditors(newEditors);
+      setShareViewers(newViewers);
+      setUsers(updatedUsers);
+      // 記錄 uid → email 對照，讓 UI 顯示 email
+      setShareEmailMap(prev => ({ ...prev, [targetUid]: email }));
+      setNewShareEmail('');
+      setShareStatus(`✅ 已新增 ${email}`);
+    } catch (e) {
+      console.error(e);
+      setShareStatus('❌ 儲存失敗，請再試一次');
     }
+  };
 
-    setShareEditors(newEditors);
-    setShareViewers(newViewers);
-    setNewShareEmail('');
-    setShareStatus(`✅ 已新增 ${email}`);
-  } catch (e) {
-    console.error(e);
-    setShareStatus('❌ 儲存失敗，請再試一次');
-  }
-};
+  // 【修正5】傳入 targetUid 而非 email，因為資料存的是 uid
+  const removeShareMember = async (targetUid, role) => {
+    const newEditors = role === 'editor' ? shareEditors.filter(e => e !== targetUid) : shareEditors;
+    const newViewers = role === 'viewer' ? shareViewers.filter(e => e !== targetUid) : shareViewers;
+    try {
+      await updateDoc(doc(db, 'users', uid, 'trips', tripId), {
+        editors: newEditors,
+        viewers: newViewers,
+      });
+      await setDoc(doc(db, 'sharedTrips', tripId), {
+        ownerUid: uid, tripId,
+        editors: newEditors,
+        viewers: newViewers,
+      });
+      setShareEditors(newEditors);
+      setShareViewers(newViewers);
+      // 同步清除對照表
+      setShareEmailMap(prev => {
+        const updated = { ...prev };
+        delete updated[targetUid];
+        return updated;
+      });
+    } catch (e) {
+      console.error(e);
+      alert('移除失敗');
+    }
+  };
 
-const removeShareMember = async (email, role) => {
-  const newEditors = role === 'editor' ? shareEditors.filter(e => e !== email) : shareEditors;
-  const newViewers = role === 'viewer' ? shareViewers.filter(e => e !== email) : shareViewers;
-  try {
-    await updateDoc(doc(db, 'users', uid, 'trips', tripId), {
-      editors: newEditors,
-      viewers: newViewers,
-    });
-    await setDoc(doc(db, 'sharedTrips', tripId), {
-      ownerUid: uid, tripId,
-      editors: newEditors,
-      viewers: newViewers,
-    });
-    setShareEditors(newEditors);
-    setShareViewers(newViewers);
-  } catch (e) {
-    alert('移除失敗');
-  }
-};
   // ── Render ────────────────────────────────────────────────────────────────
   return (
     <div className="min-h-screen bg-slate-50 font-sans text-slate-800 pb-24">
@@ -865,80 +888,84 @@ const removeShareMember = async (email, role) => {
         </div>
       )}
 
-{/* ══════════════════════════════════════════════════════════════════
-    SHARE MODAL
-══════════════════════════════════════════════════════════════════ */}
-{isShareOpen && (
-  <div className="fixed inset-0 bg-slate-900/40 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
-    <div className="bg-white w-full sm:max-w-md rounded-t-3xl sm:rounded-2xl max-h-[90vh] overflow-y-auto shadow-xl">
-      <div className="sticky top-0 bg-white/95 backdrop-blur-sm p-4 border-b flex justify-between items-center z-10">
-        <h2 className="font-bold text-lg flex items-center gap-2"><Share2 size={20} className="text-indigo-600"/>分享行程</h2>
-        <button onClick={()=>{setIsShareOpen(false);setShareStatus('');}} className="p-2 bg-slate-100 rounded-full hover:bg-slate-200"><X size={20}/></button>
-      </div>
-      <div className="p-5 space-y-6">
+      {/* ══════════════════════════════════════════════════════════════════
+          SHARE MODAL
+      ══════════════════════════════════════════════════════════════════ */}
+      {isShareOpen && (
+        <div className="fixed inset-0 bg-slate-900/40 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
+          <div className="bg-white w-full sm:max-w-md rounded-t-3xl sm:rounded-2xl max-h-[90vh] overflow-y-auto shadow-xl">
+            <div className="sticky top-0 bg-white/95 backdrop-blur-sm p-4 border-b flex justify-between items-center z-10">
+              <h2 className="font-bold text-lg flex items-center gap-2"><Share2 size={20} className="text-indigo-600"/>分享行程</h2>
+              <button onClick={()=>{setIsShareOpen(false);setShareStatus('');}} className="p-2 bg-slate-100 rounded-full hover:bg-slate-200"><X size={20}/></button>
+            </div>
+            <div className="p-5 space-y-6">
 
-        {/* 新增成員 */}
-        <div className="space-y-3">
-          <h3 className="font-bold text-slate-700 text-sm border-b pb-2">新增共享成員</h3>
-          <input
-            type="email"
-            placeholder="輸入對方的 Gmail..."
-            value={newShareEmail}
-            onChange={e=>{setNewShareEmail(e.target.value);setShareStatus('');}}
-            className="w-full border border-slate-200 rounded-xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-indigo-400"
-          />
-          <div className="flex gap-2">
-            <button
-              onClick={()=>setNewShareRole('viewer')}
-              className={`flex-1 py-2.5 rounded-xl text-sm font-bold border-2 transition-colors ${newShareRole==='viewer'?'border-indigo-500 bg-indigo-50 text-indigo-700':'border-slate-200 text-slate-500'}`}
-            >👁 只能查看</button>
-            <button
-              onClick={()=>setNewShareRole('editor')}
-              className={`flex-1 py-2.5 rounded-xl text-sm font-bold border-2 transition-colors ${newShareRole==='editor'?'border-indigo-500 bg-indigo-50 text-indigo-700':'border-slate-200 text-slate-500'}`}
-            >✏️ 可以編輯</button>
+              {/* 新增成員 */}
+              <div className="space-y-3">
+                <h3 className="font-bold text-slate-700 text-sm border-b pb-2">新增共享成員</h3>
+                <input
+                  type="email"
+                  placeholder="輸入對方的 Gmail..."
+                  value={newShareEmail}
+                  onChange={e=>{setNewShareEmail(e.target.value);setShareStatus('');}}
+                  className="w-full border border-slate-200 rounded-xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-indigo-400"
+                />
+                <div className="flex gap-2">
+                  <button
+                    onClick={()=>setNewShareRole('viewer')}
+                    className={`flex-1 py-2.5 rounded-xl text-sm font-bold border-2 transition-colors ${newShareRole==='viewer'?'border-indigo-500 bg-indigo-50 text-indigo-700':'border-slate-200 text-slate-500'}`}
+                  >👁 只能查看</button>
+                  <button
+                    onClick={()=>setNewShareRole('editor')}
+                    className={`flex-1 py-2.5 rounded-xl text-sm font-bold border-2 transition-colors ${newShareRole==='editor'?'border-indigo-500 bg-indigo-50 text-indigo-700':'border-slate-200 text-slate-500'}`}
+                  >✏️ 可以編輯</button>
+                </div>
+                <button
+                  onClick={addShareMember}
+                  className="w-full py-3 bg-indigo-600 text-white font-bold rounded-xl hover:bg-indigo-700"
+                >新增成員</button>
+                {shareStatus && <p className="text-sm text-center text-slate-600">{shareStatus}</p>}
+              </div>
+
+              {/* 目前編輯者 — 【修正】顯示 email，傳 uid 給 removeShareMember */}
+              {shareEditors.length > 0 && (
+                <div className="space-y-2">
+                  <h3 className="font-bold text-slate-700 text-sm flex items-center gap-1">✏️ 可編輯（{shareEditors.length}）</h3>
+                  {shareEditors.map(editorUid=>(
+                    <div key={editorUid} className="flex justify-between items-center bg-indigo-50 border border-indigo-100 px-4 py-3 rounded-xl text-sm">
+                      <span className="text-indigo-800 font-medium truncate flex-1">
+                        {shareEmailMap[editorUid] || editorUid}
+                      </span>
+                      <button onClick={()=>removeShareMember(editorUid,'editor')} className="text-slate-400 hover:text-red-500 ml-2"><X size={16}/></button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* 目前瀏覽者 — 【修正】顯示 email，傳 uid 給 removeShareMember */}
+              {shareViewers.length > 0 && (
+                <div className="space-y-2">
+                  <h3 className="font-bold text-slate-700 text-sm flex items-center gap-1">👁 只能查看（{shareViewers.length}）</h3>
+                  {shareViewers.map(viewerUid=>(
+                    <div key={viewerUid} className="flex justify-between items-center bg-slate-50 border border-slate-200 px-4 py-3 rounded-xl text-sm">
+                      <span className="text-slate-700 font-medium truncate flex-1">
+                        {shareEmailMap[viewerUid] || viewerUid}
+                      </span>
+                      <button onClick={()=>removeShareMember(viewerUid,'viewer')} className="text-slate-400 hover:text-red-500 ml-2"><X size={16}/></button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {shareEditors.length===0 && shareViewers.length===0 && (
+                <div className="text-center py-4 text-slate-400 text-sm">尚未分享給任何人</div>
+              )}
+
+              <p className="text-xs text-slate-400 text-center">對方需要先登入 App，才能看到被分享的行程</p>
+            </div>
           </div>
-          <button
-            onClick={addShareMember}
-            className="w-full py-3 bg-indigo-600 text-white font-bold rounded-xl hover:bg-indigo-700"
-          >新增成員</button>
-          {shareStatus && <p className="text-sm text-center text-slate-600">{shareStatus}</p>}
         </div>
-
-        {/* 目前編輯者 */}
-        {shareEditors.length > 0 && (
-          <div className="space-y-2">
-            <h3 className="font-bold text-slate-700 text-sm flex items-center gap-1">✏️ 可編輯（{shareEditors.length}）</h3>
-            {shareEditors.map(email=>(
-              <div key={email} className="flex justify-between items-center bg-indigo-50 border border-indigo-100 px-4 py-3 rounded-xl text-sm">
-                <span className="text-indigo-800 font-medium truncate flex-1">{email}</span>
-                <button onClick={()=>removeShareMember(email,'editor')} className="text-slate-400 hover:text-red-500 ml-2"><X size={16}/></button>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {/* 目前瀏覽者 */}
-        {shareViewers.length > 0 && (
-          <div className="space-y-2">
-            <h3 className="font-bold text-slate-700 text-sm flex items-center gap-1">👁 只能查看（{shareViewers.length}）</h3>
-            {shareViewers.map(email=>(
-              <div key={email} className="flex justify-between items-center bg-slate-50 border border-slate-200 px-4 py-3 rounded-xl text-sm">
-                <span className="text-slate-700 font-medium truncate flex-1">{email}</span>
-                <button onClick={()=>removeShareMember(email,'viewer')} className="text-slate-400 hover:text-red-500 ml-2"><X size={16}/></button>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {shareEditors.length===0 && shareViewers.length===0 && (
-          <div className="text-center py-4 text-slate-400 text-sm">尚未分享給任何人</div>
-        )}
-
-        <p className="text-xs text-slate-400 text-center">對方需要先登入 App，才能看到被分享的行程</p>
-      </div>
-    </div>
-  </div>
-)}
+      )}
 
       {/* ══════════════════════════════════════════════════════════════════
           EDIT ITINERARY MODAL
