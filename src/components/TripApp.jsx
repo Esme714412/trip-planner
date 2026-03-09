@@ -1,5 +1,6 @@
+import { doc, updateDoc, serverTimestamp, setDoc, deleteDoc } from 'firebase/firestore';
+import { Share2 } from 'lucide-react';
 import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
-import { doc, updateDoc, serverTimestamp } from 'firebase/firestore';
 import { db } from '../firebase/config';
 import {
   MapPin, Clock, Globe, ShoppingBag, Ticket, Navigation,
@@ -11,7 +12,13 @@ import {
 } from 'lucide-react';
 import ExpenseFormModal from './ExpenseFormModal';
 import { useConfirm } from './ConfirmModal';
-
+//─── users view setting ──────────────────────────────────────────────────────────────────
+const [isShareOpen,    setIsShareOpen]    = useState(false);
+const [shareEditors,   setShareEditors]   = useState(initialData.editors  || []);
+const [shareViewers,   setShareViewers]   = useState(initialData.viewers  || []);
+const [newShareEmail,  setNewShareEmail]  = useState('');
+const [newShareRole,   setNewShareRole]   = useState('viewer');
+const [shareStatus,    setShareStatus]    = useState('');
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 const TRIP_ICONS = [Plane, MapPin, Luggage, CameraIcon];
 const TRIP_EMOJIS = ['✈️', '🗺️', '🎒', '📸'];
@@ -288,6 +295,57 @@ export default function TripApp({ uid, tripId, initialData, onBack }) {
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
   };
 
+  // ── Share management ──────────────────────────────────────────────────────
+const addShareMember = async () => {
+  const email = newShareEmail.trim().toLowerCase();
+  if (!email || !email.includes('@')) { setShareStatus('請輸入正確的 Email'); return; }
+  if (shareEditors.includes(email) || shareViewers.includes(email)) { setShareStatus('此 Email 已在名單中'); return; }
+
+  const newEditors = newShareRole === 'editor' ? [...shareEditors, email] : shareEditors;
+  const newViewers = newShareRole === 'viewer' ? [...shareViewers, email] : shareViewers;
+
+  try {
+    // 更新行程文件的權限
+    await updateDoc(doc(db, 'users', uid, 'trips', tripId), {
+      editors: newEditors,
+      viewers: newViewers,
+      ownerId: uid,
+    });
+    // 在 sharedTrips 建立索引，讓對方能查詢到
+    await setDoc(doc(db, 'sharedTrips', tripId), {
+      ownerUid: uid,
+      tripId,
+      editors: newEditors,
+      viewers: newViewers,
+    });
+    setShareEditors(newEditors);
+    setShareViewers(newViewers);
+    setNewShareEmail('');
+    setShareStatus(`✅ 已新增 ${email}`);
+  } catch (e) {
+    setShareStatus('❌ 儲存失敗，請再試一次');
+  }
+};
+
+const removeShareMember = async (email, role) => {
+  const newEditors = role === 'editor' ? shareEditors.filter(e => e !== email) : shareEditors;
+  const newViewers = role === 'viewer' ? shareViewers.filter(e => e !== email) : shareViewers;
+  try {
+    await updateDoc(doc(db, 'users', uid, 'trips', tripId), {
+      editors: newEditors,
+      viewers: newViewers,
+    });
+    await setDoc(doc(db, 'sharedTrips', tripId), {
+      ownerUid: uid, tripId,
+      editors: newEditors,
+      viewers: newViewers,
+    });
+    setShareEditors(newEditors);
+    setShareViewers(newViewers);
+  } catch (e) {
+    alert('移除失敗');
+  }
+};
   // ── Render ────────────────────────────────────────────────────────────────
   return (
     <div className="min-h-screen bg-slate-50 font-sans text-slate-800 pb-24">
@@ -323,6 +381,9 @@ export default function TripApp({ uid, tripId, initialData, onBack }) {
           </div>
 
           <button onClick={()=>setIsSettingsOpen(true)} className="p-2 text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 rounded-full transition-colors shrink-0">
+            <button onClick={()=>setIsShareOpen(true)} className="p-2 text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 rounded-full transition-colors shrink-0">
+              <Share2 size={22}/>
+            </button>
             <Settings size={22}/>
           </button>
         </div>
@@ -778,6 +839,81 @@ export default function TripApp({ uid, tripId, initialData, onBack }) {
           </div>
         </div>
       )}
+
+{/* ══════════════════════════════════════════════════════════════════
+    SHARE MODAL
+══════════════════════════════════════════════════════════════════ */}
+{isShareOpen && (
+  <div className="fixed inset-0 bg-slate-900/40 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
+    <div className="bg-white w-full sm:max-w-md rounded-t-3xl sm:rounded-2xl max-h-[90vh] overflow-y-auto shadow-xl">
+      <div className="sticky top-0 bg-white/95 backdrop-blur-sm p-4 border-b flex justify-between items-center z-10">
+        <h2 className="font-bold text-lg flex items-center gap-2"><Share2 size={20} className="text-indigo-600"/>分享行程</h2>
+        <button onClick={()=>{setIsShareOpen(false);setShareStatus('');}} className="p-2 bg-slate-100 rounded-full hover:bg-slate-200"><X size={20}/></button>
+      </div>
+      <div className="p-5 space-y-6">
+
+        {/* 新增成員 */}
+        <div className="space-y-3">
+          <h3 className="font-bold text-slate-700 text-sm border-b pb-2">新增共享成員</h3>
+          <input
+            type="email"
+            placeholder="輸入對方的 Gmail..."
+            value={newShareEmail}
+            onChange={e=>{setNewShareEmail(e.target.value);setShareStatus('');}}
+            className="w-full border border-slate-200 rounded-xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-indigo-400"
+          />
+          <div className="flex gap-2">
+            <button
+              onClick={()=>setNewShareRole('viewer')}
+              className={`flex-1 py-2.5 rounded-xl text-sm font-bold border-2 transition-colors ${newShareRole==='viewer'?'border-indigo-500 bg-indigo-50 text-indigo-700':'border-slate-200 text-slate-500'}`}
+            >👁 只能查看</button>
+            <button
+              onClick={()=>setNewShareRole('editor')}
+              className={`flex-1 py-2.5 rounded-xl text-sm font-bold border-2 transition-colors ${newShareRole==='editor'?'border-indigo-500 bg-indigo-50 text-indigo-700':'border-slate-200 text-slate-500'}`}
+            >✏️ 可以編輯</button>
+          </div>
+          <button
+            onClick={addShareMember}
+            className="w-full py-3 bg-indigo-600 text-white font-bold rounded-xl hover:bg-indigo-700"
+          >新增成員</button>
+          {shareStatus && <p className="text-sm text-center text-slate-600">{shareStatus}</p>}
+        </div>
+
+        {/* 目前編輯者 */}
+        {shareEditors.length > 0 && (
+          <div className="space-y-2">
+            <h3 className="font-bold text-slate-700 text-sm flex items-center gap-1">✏️ 可編輯（{shareEditors.length}）</h3>
+            {shareEditors.map(email=>(
+              <div key={email} className="flex justify-between items-center bg-indigo-50 border border-indigo-100 px-4 py-3 rounded-xl text-sm">
+                <span className="text-indigo-800 font-medium truncate flex-1">{email}</span>
+                <button onClick={()=>removeShareMember(email,'editor')} className="text-slate-400 hover:text-red-500 ml-2"><X size={16}/></button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* 目前瀏覽者 */}
+        {shareViewers.length > 0 && (
+          <div className="space-y-2">
+            <h3 className="font-bold text-slate-700 text-sm flex items-center gap-1">👁 只能查看（{shareViewers.length}）</h3>
+            {shareViewers.map(email=>(
+              <div key={email} className="flex justify-between items-center bg-slate-50 border border-slate-200 px-4 py-3 rounded-xl text-sm">
+                <span className="text-slate-700 font-medium truncate flex-1">{email}</span>
+                <button onClick={()=>removeShareMember(email,'viewer')} className="text-slate-400 hover:text-red-500 ml-2"><X size={16}/></button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {shareEditors.length===0 && shareViewers.length===0 && (
+          <div className="text-center py-4 text-slate-400 text-sm">尚未分享給任何人</div>
+        )}
+
+        <p className="text-xs text-slate-400 text-center">對方需要先登入 App，才能看到被分享的行程</p>
+      </div>
+    </div>
+  </div>
+)}
 
       {/* ══════════════════════════════════════════════════════════════════
           EDIT ITINERARY MODAL
