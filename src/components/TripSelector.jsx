@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { collection, addDoc, deleteDoc, doc, serverTimestamp } from 'firebase/firestore';
 import { signOut } from 'firebase/auth';
 import { db, auth } from '../firebase/config';
-import { Plus, Trash2, LogOut, Plane, MapPin, Camera, Luggage } from 'lucide-react';
+import { Plus, Trash2, LogOut, Plane, MapPin, Camera, Luggage, Users } from 'lucide-react';
 
 const ICONS = ['✈️', '🗺️', '🎒', '📸', '🏖️', '🏔️', '🌏', '🍜'];
 
@@ -57,7 +57,7 @@ export default function TripSelector({ uid, trips, sharedTrips, onSelect }) {
           </button>
         </div>
 
-        {/* Trip List */}
+        {/* 自己的行程 */}
         <div className="space-y-3 mb-5">
           {trips.length === 0 && !creating && (
             <div className="bg-white rounded-2xl p-8 text-center border border-slate-100 shadow-sm">
@@ -90,33 +90,36 @@ export default function TripSelector({ uid, trips, sharedTrips, onSelect }) {
           ))}
         </div>
 
-{/* 被分享的行程 */}
-{sharedTrips?.length > 0 && (
-  <div className="mt-6">
-    <h2 className="text-sm font-bold text-slate-500 mb-3 flex items-center gap-1">
-      <Users size={14}/> 分享給我的行程
-    </h2>
-    {sharedTrips.map(trip => (
-      <div
-        key={trip.tripId}
-        onClick={() => onSelect(trip.tripId)}
-        className="bg-white rounded-2xl p-4 flex items-center gap-4 cursor-pointer border border-slate-100 shadow-sm hover:border-indigo-300 hover:shadow-md transition-all group mb-3"
-      >
-        <div className="w-12 h-12 bg-purple-50 rounded-xl flex items-center justify-center text-2xl shrink-0">
-          🤝
-        </div>
-        <div className="flex-1 min-w-0">
-          <div className="font-bold text-slate-800 truncate group-hover:text-indigo-700">
-            {trip.tripId}
+        {/* 被分享的行程 */}
+        {sharedTrips?.length > 0 && (
+          <div className="mt-2 mb-5">
+            <h2 className="text-sm font-bold text-slate-500 mb-3 flex items-center gap-1">
+              <Users size={14}/> 分享給我的行程
+            </h2>
+            <div className="space-y-3">
+              {sharedTrips.map(trip => (
+                <div
+                  key={trip.id}
+                  onClick={() => onSelect(trip.id)}
+                  className="bg-white rounded-2xl p-4 flex items-center gap-4 cursor-pointer border border-slate-100 shadow-sm hover:border-purple-300 hover:shadow-md transition-all group"
+                >
+                  <div className="w-12 h-12 bg-purple-50 rounded-xl flex items-center justify-center text-2xl shrink-0">
+                    {ICONS[trip.iconIndex ?? 0] ?? '🤝'}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="font-bold text-slate-800 truncate group-hover:text-purple-700">
+                      {trip.name || '載入中...'}
+                    </div>
+                    <div className="text-xs text-slate-400 mt-0.5">
+                      {trip.itinerary?.length ?? 0} 個行程・{trip.expenses?.length ?? 0} 筆花費・
+                      {trip.sharedRole === 'editor' ? '✏️ 可編輯' : '👁 只能查看'}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
-          <div className="text-xs text-slate-400 mt-0.5">
-            {trip.sharedRole === 'editor' ? '✏️ 可編輯' : '👁 只能查看'}
-          </div>
-        </div>
-      </div>
-    ))}
-  </div>
-)}
+        )}
 
         {/* Create New */}
         {creating ? (
