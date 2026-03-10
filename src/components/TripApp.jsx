@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
-import { doc, updateDoc, serverTimestamp, setDoc, getDocs, collection, query, where } from 'firebase/firestore';
+import { doc, updateDoc, serverTimestamp, setDoc, getDocs, getDoc, collection, query, where } from 'firebase/firestore';
 import { db } from '../firebase/config';
 import {
   MapPin, Clock, Globe, ShoppingBag, Ticket, Navigation,
@@ -103,6 +103,23 @@ export default function TripApp({ uid, tripId, initialData, onBack }) {
   const TripIcon = TRIP_ICONS[tripIconIndex % TRIP_ICONS.length];
 
   useEffect(() => { if (isEditingName) tripNameRef.current?.focus(); }, [isEditingName]);
+
+  // ── 載入既有共享成員的 email（解決重新進入後顯示 UID 的問題）────────────
+  useEffect(() => {
+    const allUids = [...(initialData.editors || []), ...(initialData.viewers || [])];
+    if (allUids.length === 0) return;
+    const loadEmails = async () => {
+      const map = {};
+      for (const targetUid of allUids) {
+        try {
+          const snap = await getDoc(doc(db, 'userProfiles', targetUid));
+          if (snap.exists()) map[targetUid] = snap.data().email || targetUid;
+        } catch (e) { /* ignore */ }
+      }
+      setShareEmailMap(map);
+    };
+    loadEmails();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Firebase auto-save (debounced 1.2 s) ─────────────────────────────────
   const payload = useMemo(() => ({

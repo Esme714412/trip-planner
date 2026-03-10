@@ -1,15 +1,13 @@
 import { useState } from 'react';
-import { collection, addDoc, deleteDoc, doc, serverTimestamp } from 'firebase/firestore';
+import { collection, addDoc, deleteDoc, doc, serverTimestamp, updateDoc } from 'firebase/firestore';
 import { signOut } from 'firebase/auth';
 import { db, auth } from '../firebase/config';
-import { Plus, Trash2, LogOut, Plane, MapPin, Camera, Luggage, Users } from 'lucide-react';
+import { Plus, Trash2, LogOut, Users, Edit2, Check, X } from 'lucide-react';
 
 const ICONS = ['✈️', '🗺️', '🎒', '📸', '🏖️', '🏔️', '🌏', '🍜'];
 
 const DEFAULT_TRIP = {
-  name: '新旅程',
   iconIndex: 0,
-  users: ['自己'],
   categories: ['飲食', '交通', '住宿', '購物', '娛樂', '門票', '其他'],
   rates: { TWD: 1, JPY: 0.21, USD: 31.5 },
   baseCurrency: 'TWD',
@@ -18,15 +16,44 @@ const DEFAULT_TRIP = {
   expenses: [],
 };
 
-export default function TripSelector({ uid, trips, sharedTrips, onSelect }) {
+export default function TripSelector({ uid, userProfile, trips, sharedTrips, onSelect }) {
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState('');
 
+  // ── 暱稱編輯 ─────────────────────────────────────────────────────────────
+  const [isEditingNickname, setIsEditingNickname] = useState(false);
+  const [nicknameInput,     setNicknameInput]     = useState('');
+
+  // 優先顯示：自訂 nickname > Google displayName > email 前綴
+  const displayNickname = userProfile?.nickname
+    || userProfile?.displayName
+    || userProfile?.email?.split('@')[0]
+    || '我';
+
+  const startEditNickname = () => {
+    setNicknameInput(displayNickname);
+    setIsEditingNickname(true);
+  };
+
+  const saveNickname = async () => {
+    const name = nicknameInput.trim();
+    if (!name) return;
+    await updateDoc(doc(db, 'userProfiles', uid), { nickname: name });
+    setIsEditingNickname(false);
+  };
+
+  // ── 建立行程 ─────────────────────────────────────────────────────────────
   const handleCreate = async () => {
     const name = newName.trim() || '新旅程';
+    // 用自己的暱稱當第一個參與人員
+    const myName = userProfile?.nickname
+      || userProfile?.displayName
+      || userProfile?.email?.split('@')[0]
+      || '自己';
     const ref = await addDoc(collection(db, 'users', uid, 'trips'), {
       ...DEFAULT_TRIP,
       name,
+      users: [myName],
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
@@ -46,8 +73,9 @@ export default function TripSelector({ uid, trips, sharedTrips, onSelect }) {
   return (
     <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-100 p-6">
       <div className="max-w-sm mx-auto pt-10">
-        {/* Header */}
-        <div className="flex justify-between items-center mb-8">
+
+        {/* ── Header ── */}
+        <div className="flex justify-between items-center mb-6">
           <div>
             <h1 className="text-2xl font-bold text-slate-800">我的旅程</h1>
             <p className="text-slate-500 text-sm mt-0.5">選擇或建立一趟旅行</p>
@@ -57,7 +85,42 @@ export default function TripSelector({ uid, trips, sharedTrips, onSelect }) {
           </button>
         </div>
 
-        {/* 自己的行程 */}
+        {/* ── 我的暱稱 ── */}
+        <div className="bg-white rounded-2xl p-4 border border-slate-100 shadow-sm mb-6">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 bg-indigo-100 rounded-full flex items-center justify-center text-indigo-600 font-bold text-sm">
+                {displayNickname[0]?.toUpperCase() || '我'}
+              </div>
+              <div>
+                <div className="text-xs text-slate-400 mb-0.5">我的暱稱（顯示於行程參與人員）</div>
+                {isEditingNickname ? (
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      autoFocus
+                      type="text"
+                      value={nicknameInput}
+                      onChange={e => setNicknameInput(e.target.value)}
+                      onKeyDown={e => e.key === 'Enter' && saveNickname()}
+                      className="border-b border-indigo-400 bg-transparent outline-none text-sm font-bold text-slate-700 w-32 px-1"
+                    />
+                    <button onClick={saveNickname} className="text-green-500 hover:text-green-700"><Check size={16}/></button>
+                    <button onClick={() => setIsEditingNickname(false)} className="text-slate-400 hover:text-slate-600"><X size={16}/></button>
+                  </div>
+                ) : (
+                  <div className="font-bold text-slate-700 text-sm">{displayNickname}</div>
+                )}
+              </div>
+            </div>
+            {!isEditingNickname && (
+              <button onClick={startEditNickname} className="p-1.5 text-slate-300 hover:text-indigo-500 hover:bg-indigo-50 rounded-lg transition-colors">
+                <Edit2 size={15}/>
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* ── 自己的行程 ── */}
         <div className="space-y-3 mb-5">
           {trips.length === 0 && !creating && (
             <div className="bg-white rounded-2xl p-8 text-center border border-slate-100 shadow-sm">
@@ -90,7 +153,7 @@ export default function TripSelector({ uid, trips, sharedTrips, onSelect }) {
           ))}
         </div>
 
-        {/* 被分享的行程 */}
+        {/* ── 被分享的行程 ── */}
         {sharedTrips?.length > 0 && (
           <div className="mt-2 mb-5">
             <h2 className="text-sm font-bold text-slate-500 mb-3 flex items-center gap-1">
@@ -121,7 +184,7 @@ export default function TripSelector({ uid, trips, sharedTrips, onSelect }) {
           </div>
         )}
 
-        {/* Create New */}
+        {/* ── 新增行程 ── */}
         {creating ? (
           <div className="bg-white rounded-2xl p-4 border-2 border-indigo-300 shadow-sm space-y-3">
             <input

@@ -8,6 +8,7 @@ import TripApp      from './components/TripApp';
 
 export default function App() {
   const [user,              setUser]              = useState(undefined);
+  const [userProfile,       setUserProfile]       = useState(null);   // ← 新增
   const [trips,             setTrips]             = useState([]);
   const [sharedTrips,       setSharedTrips]       = useState([]);
   const [sharedTripDataMap, setSharedTripDataMap] = useState({});
@@ -26,7 +27,6 @@ export default function App() {
     const unsub = onAuthStateChanged(auth, async (u) => {
       setUser(u ?? null);
       if (u) {
-        console.log('🔑 登入 uid:', u.uid, 'email:', u.email);
         await setDoc(doc(db, 'userProfiles', u.uid), {
           uid: u.uid,
           email: u.email,
@@ -36,6 +36,15 @@ export default function App() {
     });
     return unsub;
   }, [redirectDone]);
+
+  // ── 即時監聽自己的 userProfile（含 nickname）─────────────────────────────
+  useEffect(() => {
+    if (!user) { setUserProfile(null); return; }
+    const unsub = onSnapshot(doc(db, 'userProfiles', user.uid), snap => {
+      if (snap.exists()) setUserProfile(snap.data());
+    });
+    return unsub;
+  }, [user]);
 
   useEffect(() => {
     if (!user) { setTrips([]); return; }
@@ -50,18 +59,12 @@ export default function App() {
   useEffect(() => {
     if (!user) { setSharedTrips([]); setSharedTripDataMap({}); return; }
 
-    console.log('🔍 開始查詢 sharedTrips，uid:', user.uid);
-
     const results = {};
 
     const unsubE = onSnapshot(
       query(collection(db, 'sharedTrips'), where('editors', 'array-contains', user.uid)),
       snap => {
-        console.log('✏️ editors 查詢結果數量:', snap.docs.length);
-        snap.docs.forEach(d => {
-          console.log('  editor trip:', d.id, d.data());
-          results[d.id] = { ...d.data(), sharedRole: 'editor' };
-        });
+        snap.docs.forEach(d => { results[d.id] = { ...d.data(), sharedRole: 'editor' }; });
         setSharedTrips(Object.values(results));
       },
       err => console.error('❌ editors 查詢失敗:', err)
@@ -70,11 +73,7 @@ export default function App() {
     const unsubV = onSnapshot(
       query(collection(db, 'sharedTrips'), where('viewers', 'array-contains', user.uid)),
       snap => {
-        console.log('👁 viewers 查詢結果數量:', snap.docs.length);
-        snap.docs.forEach(d => {
-          console.log('  viewer trip:', d.id, d.data());
-          results[d.id] = { ...d.data(), sharedRole: 'viewer' };
-        });
+        snap.docs.forEach(d => { results[d.id] = { ...d.data(), sharedRole: 'viewer' }; });
         setSharedTrips(Object.values(results));
       },
       err => console.error('❌ viewers 查詢失敗:', err)
@@ -85,21 +84,17 @@ export default function App() {
 
   // ── 被分享的行程：補齊完整資料 ────────────────────────────────────────────
   useEffect(() => {
-    console.log('📦 sharedTrips 更新:', sharedTrips.length, '筆', sharedTrips);
-
     if (sharedTrips.length === 0) { setSharedTripDataMap({}); return; }
 
     const unsubs = [];
     const dataMap = {};
 
     sharedTrips.forEach(meta => {
-      console.log('📖 訂閱行程資料:', `users/${meta.ownerUid}/trips/${meta.tripId}`);
       const tripRef = doc(db, 'users', meta.ownerUid, 'trips', meta.tripId);
       const unsub = onSnapshot(
         tripRef,
         snap => {
           if (snap.exists()) {
-            console.log('✅ 行程資料載入成功:', snap.id, snap.data().name);
             dataMap[meta.tripId] = {
               ...snap.data(),
               id: snap.id,
@@ -109,7 +104,6 @@ export default function App() {
               viewers: meta.viewers || [],
             };
           } else {
-            console.warn('⚠️ 行程不存在:', meta.tripId);
             delete dataMap[meta.tripId];
           }
           setSharedTripDataMap({ ...dataMap });
@@ -162,11 +156,11 @@ export default function App() {
   }
 
   const sharedTripsWithData = Object.values(sharedTripDataMap);
-  console.log('🗂 傳給 TripSelector 的 sharedTrips:', sharedTripsWithData.length, '筆');
 
   return (
     <TripSelector
       uid={user.uid}
+      userProfile={userProfile}     // ← 傳入 userProfile
       trips={trips}
       sharedTrips={sharedTripsWithData}
       onSelect={id => setActiveTripId(id)}
