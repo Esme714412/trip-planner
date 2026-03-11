@@ -56,9 +56,112 @@ function getDatesInRange(start, end) {
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
-export default function TripApp({ uid, currentUserUid, tripId, initialData, readOnly = false, onBack }) {
+// 解析 Google Maps URL，取出地點名稱
+function parseGoogleMapsUrl(url) {
+  if (!url) return null;
+  try {
+    const placeMatch = url.match(/maps\/place\/([^/@?&]+)/);
+    if (placeMatch) return decodeURIComponent(placeMatch[1].replace(/\+/g, ' '));
+    const searchMatch = url.match(/maps\/search\/([^/@?&]+)/);
+    if (searchMatch) return decodeURIComponent(searchMatch[1].replace(/\+/g, ' '));
+  } catch (e) {}
+  return null;
+}
+
+// Markdown 解析器
+function parseMarkdown(mdText) {
+  const lines = mdText.split('\n');
+  const itineraryItems = [];
+  const checklistItems = [];
+  let currentDate = '';
+  let currentItem = null;
+  let inChecklist = false;
+  let inTodo = false;
+  let inShopping = false;
+
+  const flushItem = () => {
+    if (currentItem && currentItem.title) {
+      // 需提前購票 → 自動加行前清單
+      if (currentItem.transportNeedTicket && currentItem.title) {
+        checklistItems.push({ id: crypto.randomUUID(), text: `購票：${currentItem.title}`, checked: false, autoAdded: true });
+      }
+      itineraryItems.push({ ...currentItem, id: crypto.randomUUID() });
+    }
+    currentItem = null;
+    inTodo = false;
+    inShopping = false;
+  };
+
+  for (let raw of lines) {
+    const line = raw;
+    const trimmed = line.trim();
+
+    // ## 日期區塊
+    if (trimmed.startsWith('## ')) {
+      flushItem();
+      const dateMatch = trimmed.match(/(\d{4}-\d{2}-\d{2})/);
+      if (dateMatch) { currentDate = dateMatch[1]; inChecklist = false; }
+      else if (trimmed.includes('清單') || trimmed.includes('checklist')) { inChecklist = true; }
+      continue;
+    }
+
+    // 行前清單
+    if (inChecklist) {
+      if (trimmed.match(/^-\s*\[( |x|X)\]\s+/)) {
+        const checked = trimmed.match(/^-\s*\[x\]/i) !== null;
+        const text = trimmed.replace(/^-\s*\[[ xX]\]\s*/, '').trim();
+        if (text) checklistItems.push({ id: crypto.randomUUID(), text, checked });
+      }
+      continue;
+    }
+
+    // 景點開始 (- time: 或 - title:)
+    if (trimmed.startsWith('- time:') || trimmed.startsWith('- title:')) {
+      flushItem();
+      currentItem = { date: currentDate, time: '', title: '', location: '', transport: '',
+        transportDeparture: '', transportDuration: '', transportPrice: '', transportUrl: '',
+        transportNeedTicket: false, notes: '', website: '', hours: '', tickets: '',
+        shoppingList: [], todoList: [] };
+      inTodo = false; inShopping = false;
+    }
+
+    if (!currentItem) continue;
+
+    // key: value 欄位
+    const kvMatch = trimmed.match(/^-?\s*(\w+):\s*(.*)/);
+    if (kvMatch) {
+      const [, key, val] = kvMatch;
+      const v = val.trim();
+      switch (key) {
+        case 'time':               currentItem.time = v; break;
+        case 'title':              currentItem.title = v; break;
+        case 'location':           currentItem.location = v; break;
+        case 'transport':          currentItem.transport = v; break;
+        case 'transport_departure':currentItem.transportDeparture = v; break;
+        case 'transport_duration': currentItem.transportDuration = v; break;
+        case 'transport_price':    currentItem.transportPrice = v; break;
+        case 'transport_url':      currentItem.transportUrl = v; break;
+        case 'transport_ticket':   currentItem.transportNeedTicket = v === 'true'; break;
+        case 'hours':              currentItem.hours = v; break;
+        case 'website':            currentItem.website = v; break;
+        case 'notes':              currentItem.notes = v; break;
+        case 'tickets':            currentItem.tickets = v; break;
+        case 'todo':               inTodo = true; inShopping = false; break;
+        case 'shopping':           inShopping = true; inTodo = false; break;
+      }
+    } else if (trimmed.startsWith('- ') && currentItem) {
+      const text = trimmed.replace(/^-\s+/, '').trim();
+      if (inTodo && text) currentItem.todoList = [...(currentItem.todoList||[]), { id: crypto.randomUUID(), text, checked: false }];
+      else if (inShopping && text) currentItem.shoppingList = [...(currentItem.shoppingList||[]), { id: crypto.randomUUID(), text, checked: false }];
+    }
+  }
+  flushItem();
+  return { itineraryItems, checklistItems };
+}
+
+export default function TripApp({ uid, currentUserUid, currentUserName, tripId, initialData, readOnly = false, onBack }) {
   const { confirm, ConfirmUI } = useConfirm();
-  const isOwner = uid === currentUserUid; // 是否為行程擁有者
+  const isOwner = uid === currentUserUid;
 
   // ── Core state ────────────────────────────────────────────────────────────
   const [tripName,      setTripName]      = useState(initialData.name         || '新旅程');
@@ -133,10 +236,28 @@ export default function TripApp({ uid, currentUserUid, tripId, initialData, read
   const [globalNewShop,    setGlobalNewShop]    = useState('');
   const [modalNewShop,     setModalNewShop]     = useState('');
 
+  const [isMarkdownImportOpen, setIsMarkdownImportOpen] = useState(false);
+  const [markdownText,         setMarkdownText]         = useState('');
+  const [markdownStatus,       setMarkdownStatus]       = useState('');
+  const checklistRef = useRef(null);
+  const [checklistScrollRatio, setChecklistScrollRatio] = useState(0);
+
   const tripNameRef = useRef(null);
   const TripIcon = TRIP_ICONS[tripIconIndex % TRIP_ICONS.length];
 
   useEffect(() => { if (isEditingName) tripNameRef.current?.focus(); }, [isEditingName]);
+
+  // 清單捲動位置追蹤
+  useEffect(() => {
+    const el = checklistRef.current;
+    if (!el) return;
+    const handler = () => {
+      const ratio = el.scrollTop / (el.scrollHeight - el.clientHeight || 1);
+      setChecklistScrollRatio(Math.min(1, Math.max(0, ratio)));
+    };
+    el.addEventListener('scroll', handler);
+    return () => el.removeEventListener('scroll', handler);
+  }, [mode, listTab]);
 
   // ── 載入共享成員 email（重新進入後不顯示 UID）─────────────────────────────
   useEffect(() => {
@@ -216,8 +337,9 @@ export default function TripApp({ uid, currentUserUid, tripId, initialData, read
   };
 
   const saveItineraryItem = (item) => {
-    if (item.id) setItinerary(itinerary.map(i => i.id === item.id ? item : i));
-    else         setItinerary([...itinerary, { ...item, id: crypto.randomUUID() }]);
+    const withMeta = { ...item, lastEditedBy: currentUserName || '未知', lastEditedAt: new Date().toISOString() };
+    if (item.id) setItinerary(itinerary.map(i => i.id === item.id ? withMeta : i));
+    else         setItinerary([...itinerary, { ...withMeta, id: crypto.randomUUID() }]);
     setIsEditModalOpen(false);
     setModalNewShop('');
   };
@@ -350,15 +472,20 @@ export default function TripApp({ uid, currentUserUid, tripId, initialData, read
 
   // ── Export CSV ─────────────────────────────────────────────────────────────
   const exportCSV = () => {
-    let csv='\uFEFF日期/時間,關聯行程,分類,描述,總金額,幣別,付款人,'+users.map(u=>`[${u}]需付`).join(',')+'\n';
+    const tripDateInfo = tripStartDate && tripEndDate ? `${tripStartDate} ~ ${tripEndDate}` : tripStartDate || '未設定';
+    let csv = `\uFEFF旅程名稱,${tripName}\n旅行日期,${tripDateInfo}\n基準幣別,${baseCurrency}\n\n`;
+    csv += '日期/時間,關聯行程,分類,描述,原始金額,幣別,換算金額('+baseCurrency+'),付款人,' + users.map(u=>`[${u}]需付(${baseCurrency})`).join(',') + '\n';
     expenses.forEach(exp=>{
       const rel=itinerary.find(i=>i.id===exp.itineraryId);
+      const expRate=rates[exp.currency]||1;
+      const baseRate=rates[baseCurrency]||1;
+      const converted=((exp.amount*expRate)/baseRate).toFixed(2);
       const splits=users.map(u=>{
-        if(exp.splitMode==='custom')return exp.customSplit?.[u]||0;
-        if((exp.splitAmong||[]).includes(u))return +((exp.amount/(exp.splitAmong.length||1)).toFixed(2));
-        return 0;
+        if(exp.splitMode==='custom')return((exp.customSplit?.[u]||0)*(expRate/baseRate)).toFixed(2);
+        if((exp.splitAmong||[]).includes(u))return(((exp.amount/(exp.splitAmong.length||1))*expRate/baseRate).toFixed(2));
+        return '0';
       });
-      const row=[rel?rel.time:'無',rel?rel.title:'無',exp.category||'其他',exp.description,exp.amount,exp.currency,exp.paidBy,...splits].map(f=>`"${String(f).replace(/"/g,'""')}"`).join(',');
+      const row=[rel?`${rel.date} ${rel.time}`:'無',rel?rel.title:'無',exp.category||'其他',exp.description,exp.amount,exp.currency,converted,exp.paidBy,...splits].map(f=>`"${String(f).replace(/"/g,'""')}"`).join(',');
       csv+=row+'\n';
     });
     const a=document.createElement('a');
@@ -367,7 +494,65 @@ export default function TripApp({ uid, currentUserUid, tripId, initialData, read
     document.body.appendChild(a);a.click();document.body.removeChild(a);
   };
 
-  // ── Share management ───────────────────────────────────────────────────────
+  // Markdown 匯入
+  const handleMarkdownImport = () => {
+    if (!markdownText.trim()) { setMarkdownStatus('❌ 請貼上 Markdown 內容'); return; }
+    try {
+      const { itineraryItems, checklistItems } = parseMarkdown(markdownText);
+      setItinerary(prev => [...prev, ...itineraryItems]);
+      setChecklist(prev => [...prev, ...checklistItems]);
+      setMarkdownStatus(`✅ 已匯入 ${itineraryItems.length} 個景點、${checklistItems.length} 個清單項目`);
+      setMarkdownText('');
+      setTimeout(() => { setIsMarkdownImportOpen(false); setMarkdownStatus(''); }, 1500);
+    } catch(e) {
+      setMarkdownStatus('❌ 格式錯誤，請確認 Markdown 格式');
+    }
+  };
+
+  // 下載範例 Markdown
+  const downloadSampleMarkdown = () => {
+    const sample = `# 旅程名稱（選填）
+
+## 2025-05-01
+- time: 09:00
+  title: 關西國際機場
+  location: 關西國際機場
+  transport: 關空特急 Haruka
+  transport_departure: 09:30
+  transport_duration: 75分鐘
+  transport_price: 3600
+  transport_url: https://www.westjr.co.jp/global/tc/
+  transport_ticket: true
+  hours: 24小時
+  notes: 入境後換 IC 卡，前往大阪市區
+  tickets: 已預購
+  todo:
+    - 換日幣
+    - 購買 ICOCA 卡
+  shopping:
+    - 零食
+
+- time: 12:00
+  title: 大阪城
+  location: 大阪城公園
+  transport: 地鐵
+  transport_departure: 14:00
+  transport_duration: 20分鐘
+  transport_price: 230
+  hours: 09:00-17:00
+  notes: 天守閣需購票
+  tickets: 成人 600 日圓
+
+## 行前清單
+- [ ] 訂機票
+- [ ] 換日幣
+- [x] 申請國際駕照
+`;
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([sample], { type: 'text/markdown;charset=utf-8;' }));
+    a.download = '行程匯入範例.md';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  };
   const addShareMember = async () => {
     const email = newShareEmail.trim().toLowerCase();
     if (!email||!email.includes('@')){setShareStatus('請輸入正確的 Email');return;}
@@ -458,12 +643,13 @@ export default function TripApp({ uid, currentUserUid, tripId, initialData, read
 
           {/* 行程名稱（唯讀時不可編輯） */}
           {!readOnly && isEditingName ? (
-            <input ref={tripNameRef} type="text" value={tripName} onChange={e=>setTripName(e.target.value)}
+            <input ref={tripNameRef} type="text" value={tripName} onChange={e=>setTripName(e.target.value.slice(0,15))}
               onBlur={()=>setIsEditingName(false)} onKeyDown={e=>e.key==='Enter'&&setIsEditingName(false)}
-              className="text-xl font-bold text-indigo-600 bg-transparent border-b-2 border-indigo-300 outline-none flex-1"/>
+              className="font-bold text-indigo-600 bg-transparent border-b-2 border-indigo-300 outline-none flex-1 text-xl"
+              maxLength={15}/>
           ) : (
             <h1 onClick={()=>!readOnly&&setIsEditingName(true)}
-              className={`text-xl font-bold text-indigo-600 truncate flex-1 ${!readOnly?'cursor-text hover:opacity-80':''}`}>
+              className={`font-bold text-indigo-600 truncate flex-1 ${tripName.length > 10 ? 'text-base' : 'text-xl'} ${!readOnly?'cursor-text hover:opacity-80':''}`}>
               {tripName}
             </h1>
           )}
@@ -573,7 +759,8 @@ export default function TripApp({ uid, currentUserUid, tripId, initialData, read
                     <button onClick={addChecklistItem} className="px-4 bg-indigo-600 text-white rounded-xl hover:bg-indigo-700"><Plus size={24}/></button>
                   </div>
                 )}
-                <div className="space-y-2">
+                <div className="relative flex gap-1">
+                  <div ref={checklistRef} className="flex-1 space-y-2 overflow-y-auto max-h-[60vh] pr-1">
                   {checklist.map(item=>(
                     <div key={item.id} className="flex items-center justify-between p-3 bg-white rounded-xl shadow-sm border border-slate-200">
                       <label className="flex items-center gap-3 flex-1 cursor-pointer">
@@ -587,6 +774,18 @@ export default function TripApp({ uid, currentUserUid, tripId, initialData, read
                     </div>
                   ))}
                   {checklist.length===0&&<div className="text-center py-10 text-slate-400 flex flex-col items-center gap-2"><ListTodo size={48} className="opacity-20"/><p>目前沒有清單項目</p></div>}
+                  </div>
+                  {/* 捲動位置指示器 */}
+                  {checklist.length > 6 && (
+                    <div className="w-1.5 flex flex-col items-center py-1 shrink-0">
+                      <div className="w-1 flex-1 bg-slate-100 rounded-full relative">
+                        <div
+                          className="w-1 bg-indigo-400 rounded-full absolute transition-all duration-100"
+                          style={{ height: '20%', top: `${checklistScrollRatio * 80}%` }}
+                        />
+                      </div>
+                    </div>
+                  )}
                 </div>
               </>
             )}
@@ -715,6 +914,9 @@ export default function TripApp({ uid, currentUserUid, tripId, initialData, read
                                 <h3 className="text-lg font-bold group-hover:text-indigo-600 pr-2">{item.title}</h3>
                                 {expandedItems.has(item.id)?<ChevronUp size={20} className="text-slate-400 shrink-0 mt-0.5"/>:<ChevronDown size={20} className="text-slate-400 shrink-0 mt-0.5"/>}
                               </div>
+                              {item.lastEditedBy && (
+                                <div className="text-xs text-slate-400 mb-2">✏️ 最後編輯：{item.lastEditedBy}</div>
+                              )}
                               {item.location&&(
                                 <div className="flex items-start gap-2 text-slate-600 mb-2 text-sm">
                                   <MapPin size={16} className="mt-0.5 shrink-0 text-red-500"/>
@@ -755,8 +957,11 @@ export default function TripApp({ uid, currentUserUid, tripId, initialData, read
                               <div className="flex gap-2 border-t pt-3">
                                 {/* 記一筆（唯讀時隱藏） */}
                                 {!readOnly&&<button onClick={()=>setAddingExpenseFor(item)} className="flex-1 flex justify-center items-center gap-1 py-2 bg-slate-100 text-slate-700 rounded-lg text-sm font-medium hover:bg-slate-200"><DollarSign size={16}/>記一筆</button>}
+                                {item.location&&(
+                                  <a href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(item.location)}`} target="_blank" rel="noreferrer" className="flex-1 flex justify-center items-center gap-1 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 shadow-sm"><Navigation size={16}/>導航到這裡</a>
+                                )}
                                 {next?.location&&(
-                                  <a href={`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(next.location)}`} target="_blank" rel="noreferrer" className="flex-1 flex justify-center items-center gap-1 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 shadow-sm"><Navigation size={16}/>導航下一站</a>
+                                  <a href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(next.location)}`} target="_blank" rel="noreferrer" className="flex justify-center items-center gap-1 py-2 px-3 bg-slate-200 text-slate-700 rounded-lg text-sm font-medium hover:bg-slate-300"><Navigation size={14}/>下一站</a>
                                 )}
                               </div>
                             </div>
@@ -964,30 +1169,47 @@ export default function TripApp({ uid, currentUserUid, tripId, initialData, read
                   <h3 className="font-bold text-slate-700 flex items-center gap-1.5"><Globe size={16} className="text-indigo-500"/>匯率設定</h3>
                   <span className="text-xs text-slate-400">基準: {baseCurrency}</span>
                 </div>
-                <p className="text-xs text-slate-400">各幣別的值 = 1 單位該幣 = 多少 TWD（台幣為基準）</p>
+                <p className="text-xs text-slate-400">設定各幣別兌換比率。範例：1 JPY = 0.21 TWD，則輸入 0.21</p>
                 <div className="space-y-2">
                   {Object.entries(rates).map(([c,r])=>(
-                    <div key={c} className={`flex justify-between items-center p-2 rounded-lg text-sm border ${c===baseCurrency?'bg-indigo-50 border-indigo-200':'bg-slate-50 border-slate-100'}`}>
-                      <div className="flex items-center gap-2 w-20">
-                        <span className={`font-bold ${c===baseCurrency?'text-indigo-700':''}`}>{c}</span>
+                    <div key={c} className={`flex justify-between items-center p-2.5 rounded-lg text-sm border ${c===baseCurrency?'bg-indigo-50 border-indigo-200':'bg-slate-50 border-slate-100'}`}>
+                      <div className="flex items-center gap-2 shrink-0">
                         {c===baseCurrency&&<Star size={12} className="text-amber-400 fill-amber-400"/>}
+                        <span className={`font-bold ${c===baseCurrency?'text-indigo-700':'text-slate-600'}`}>1 {c} =</span>
                       </div>
-                      <div className="flex items-center gap-2 flex-1">
-                        <input type="number" step="0.0001" className={`flex-1 border-b bg-transparent text-right outline-none focus:border-indigo-400 ${c===baseCurrency?'border-indigo-200 text-indigo-700 font-bold':'border-slate-300'}`} value={r} onChange={e=>updateRate(c,e.target.value)} disabled={c===baseCurrency}/>
-                        <div className="flex items-center gap-1 ml-2 w-14 justify-end">
-                          {c!==baseCurrency&&<>
-                            <button onClick={()=>setBaseCurrency(c)} className="text-slate-300 hover:text-amber-500" title="設為基準幣別"><Star size={16}/></button>
-                            <button onClick={()=>removeRate(c)} className="text-slate-400 hover:text-red-500"><X size={16}/></button>
-                          </>}
-                        </div>
+                      <div className="flex items-center gap-1 flex-1 mx-2">
+                        <input type="number" step="0.0001" className={`w-20 border-b bg-transparent text-right outline-none focus:border-indigo-400 ${c===baseCurrency?'border-indigo-200 text-indigo-700 font-bold':'border-slate-300'}`} value={r} onChange={e=>updateRate(c,e.target.value)} disabled={c===baseCurrency}/>
+                        <span className="text-slate-500 text-xs font-medium ml-1">{baseCurrency}</span>
+                      </div>
+                      <div className="flex items-center gap-1 w-10 justify-end">
+                        {c!==baseCurrency&&<>
+                          <button onClick={()=>setBaseCurrency(c)} className="text-slate-300 hover:text-amber-500" title="設為基準幣別"><Star size={16}/></button>
+                          <button onClick={()=>removeRate(c)} className="text-slate-400 hover:text-red-500"><X size={16}/></button>
+                        </>}
                       </div>
                     </div>
                   ))}
                 </div>
                 <div className="flex gap-2">
                   <input type="text" value={newCurrency} onChange={e=>setNewCurrency(e.target.value.toUpperCase())} placeholder="幣別 (如: EUR)" maxLength="3" className="w-1/3 border border-slate-200 rounded-lg px-3 py-1.5 text-sm bg-white outline-none uppercase"/>
-                  <input type="number" step="0.001" value={newRateValue} onChange={e=>setNewRateValue(e.target.value)} placeholder="對 TWD 匯率" className="flex-1 border border-slate-200 rounded-lg px-3 py-1.5 text-sm bg-white outline-none"/>
+                  <input type="number" step="0.001" value={newRateValue} onChange={e=>setNewRateValue(e.target.value)} placeholder={`1 幣 = ? ${baseCurrency}`} className="flex-1 border border-slate-200 rounded-lg px-3 py-1.5 text-sm bg-white outline-none"/>
                   <button onClick={addRate} className="bg-slate-200 text-slate-700 px-3 py-1.5 rounded-lg text-sm font-bold hover:bg-slate-300">新增</button>
+                </div>
+              </div>
+
+              {/* Markdown 匯入 */}
+              <div className="space-y-3">
+                <div className="border-b pb-2">
+                  <h3 className="font-bold text-slate-700 flex items-center gap-1.5">📥 匯入行程</h3>
+                </div>
+                <p className="text-xs text-slate-400">從 Markdown 檔案匯入行程景點與清單，會加到現有內容後面，不會覆蓋。</p>
+                <div className="flex gap-2">
+                  <button onClick={() => setIsMarkdownImportOpen(true)} className="flex-1 py-2.5 bg-indigo-600 text-white rounded-xl text-sm font-bold hover:bg-indigo-700 flex items-center justify-center gap-2">
+                    📋 貼上 Markdown 匯入
+                  </button>
+                  <button onClick={downloadSampleMarkdown} className="px-4 py-2.5 bg-slate-100 text-slate-600 rounded-xl text-sm font-bold hover:bg-slate-200">
+                    📄 下載範例
+                  </button>
                 </div>
               </div>
             </div>
@@ -1079,13 +1301,71 @@ export default function TripApp({ uid, currentUserUid, tripId, initialData, read
                 </div>
               </div>
               <div><label className="block text-xs font-bold text-slate-500 mb-1">景點 / 標題</label><input type="text" className="w-full border rounded-lg p-2 text-sm bg-slate-50 focus:ring-2 focus:ring-indigo-300 outline-none" placeholder="例如：奇美博物館" value={editingItem.title||''} onChange={e=>setEditingItem({...editingItem,title:e.target.value})}/></div>
-              <div><label className="block text-xs font-bold text-slate-500 mb-1">地點（供 Google 地圖搜尋）</label><div className="relative"><MapPin size={16} className="absolute left-3 top-2.5 text-slate-400"/><input type="text" className="w-full border rounded-lg p-2 pl-9 text-sm bg-slate-50 focus:ring-2 focus:ring-indigo-300 outline-none" placeholder="地址或地標名稱" value={editingItem.location||''} onChange={e=>setEditingItem({...editingItem,location:e.target.value})}/></div></div>
-              <div className="grid grid-cols-2 gap-3">
-                <div><label className="block text-xs font-bold text-slate-500 mb-1">前往下一站交通</label><input type="text" className="w-full border rounded-lg p-2 text-sm bg-slate-50 focus:ring-2 focus:ring-indigo-300 outline-none" placeholder="如：走路、公車" value={editingItem.transport||''} onChange={e=>setEditingItem({...editingItem,transport:e.target.value})}/></div>
-                <div><label className="block text-xs font-bold text-slate-500 mb-1">營業時間</label><input type="text" className="w-full border rounded-lg p-2 text-sm bg-slate-50 focus:ring-2 focus:ring-indigo-300 outline-none" placeholder="如：10:00-22:00" value={editingItem.hours||''} onChange={e=>setEditingItem({...editingItem,hours:e.target.value})}/></div>
+
+              {/* 地點 + Google Maps 連結解析 */}
+              <div>
+                <label className="block text-xs font-bold text-slate-500 mb-1">地點（供 Google 地圖搜尋）</label>
+                <div className="relative mb-1"><MapPin size={16} className="absolute left-3 top-2.5 text-slate-400"/><input type="text" className="w-full border rounded-lg p-2 pl-9 text-sm bg-slate-50 focus:ring-2 focus:ring-indigo-300 outline-none" placeholder="地址或地標名稱" value={editingItem.location||''} onChange={e=>setEditingItem({...editingItem,location:e.target.value})}/></div>
+                <div className="flex gap-2 mt-1">
+                  <input
+                    type="text"
+                    placeholder="貼上 Google Maps 連結自動帶入地點..."
+                    className="flex-1 border border-dashed border-indigo-300 rounded-lg px-3 py-1.5 text-xs bg-indigo-50 outline-none focus:border-indigo-400"
+                    onChange={e => {
+                      const parsed = parseGoogleMapsUrl(e.target.value);
+                      if (parsed) { setEditingItem(prev => ({...prev, location: parsed})); e.target.value = ''; }
+                    }}
+                  />
+                  <span className="text-xs text-slate-400 self-center shrink-0">自動解析</span>
+                </div>
               </div>
-              <div><label className="block text-xs font-bold text-slate-500 mb-1">官方網站</label><input type="url" className="w-full border rounded-lg p-2 text-sm bg-slate-50 focus:ring-2 focus:ring-indigo-300 outline-none" placeholder="https://" value={editingItem.website||''} onChange={e=>setEditingItem({...editingItem,website:e.target.value})}/></div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div><label className="block text-xs font-bold text-slate-500 mb-1">營業時間</label><input type="text" className="w-full border rounded-lg p-2 text-sm bg-slate-50 focus:ring-2 focus:ring-indigo-300 outline-none" placeholder="如：10:00-22:00" value={editingItem.hours||''} onChange={e=>setEditingItem({...editingItem,hours:e.target.value})}/></div>
+                <div><label className="block text-xs font-bold text-slate-500 mb-1">官方網站</label><input type="url" className="w-full border rounded-lg p-2 text-sm bg-slate-50 focus:ring-2 focus:ring-indigo-300 outline-none" placeholder="https://" value={editingItem.website||''} onChange={e=>setEditingItem({...editingItem,website:e.target.value})}/></div>
+              </div>
               <div><label className="block text-xs font-bold text-slate-500 mb-1">備註 / 提醒</label><textarea className="w-full border rounded-lg p-2 text-sm bg-slate-50 h-20 focus:ring-2 focus:ring-indigo-300 outline-none" placeholder="注意事項..." value={editingItem.notes||''} onChange={e=>setEditingItem({...editingItem,notes:e.target.value})}/></div>
+
+              {/* 交通細節（展開） */}
+              <div className="bg-blue-50/60 rounded-xl p-3 border border-blue-100 space-y-3">
+                <label className="block text-xs font-bold text-blue-700 flex items-center gap-1"><Car size={14}/>前往下一站交通</label>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="block text-xs text-slate-500 mb-1">交通方式</label>
+                    <input type="text" className="w-full border border-blue-200 rounded-lg p-2 text-sm bg-white outline-none" placeholder="如：火車、巴士" value={editingItem.transport||''} onChange={e=>setEditingItem({...editingItem,transport:e.target.value})}/>
+                  </div>
+                  <div>
+                    <label className="block text-xs text-slate-500 mb-1">預計發車時間</label>
+                    <input type="time" className="w-full border border-blue-200 rounded-lg p-2 text-sm bg-white outline-none" value={editingItem.transportDeparture||''} onChange={e=>setEditingItem({...editingItem,transportDeparture:e.target.value})}/>
+                  </div>
+                  <div>
+                    <label className="block text-xs text-slate-500 mb-1">預估交通時間</label>
+                    <input type="text" className="w-full border border-blue-200 rounded-lg p-2 text-sm bg-white outline-none" placeholder="如：30分鐘" value={editingItem.transportDuration||''} onChange={e=>setEditingItem({...editingItem,transportDuration:e.target.value})}/>
+                  </div>
+                  <div>
+                    <label className="block text-xs text-slate-500 mb-1">票價</label>
+                    <input type="text" className="w-full border border-blue-200 rounded-lg p-2 text-sm bg-white outline-none" placeholder="如：3600" value={editingItem.transportPrice||''} onChange={e=>setEditingItem({...editingItem,transportPrice:e.target.value})}/>
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-500 mb-1">購票連結</label>
+                  <input type="url" className="w-full border border-blue-200 rounded-lg p-2 text-sm bg-white outline-none" placeholder="https://" value={editingItem.transportUrl||''} onChange={e=>setEditingItem({...editingItem,transportUrl:e.target.value})}/>
+                </div>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input type="checkbox" checked={editingItem.transportNeedTicket||false}
+                    onChange={e=>{
+                      setEditingItem({...editingItem,transportNeedTicket:e.target.checked});
+                      if (e.target.checked && editingItem.transport) {
+                        const text = `購票：${editingItem.title||editingItem.transport}的交通票`;
+                        if (!checklist.some(c=>c.text===text))
+                          setChecklist(prev=>[...prev,{id:crypto.randomUUID(),text,checked:false}]);
+                      }
+                    }}
+                    className="w-4 h-4 rounded accent-indigo-600"/>
+                  <span className="text-xs font-bold text-blue-700">需提前購票（自動加入行前清單）</span>
+                </label>
+              </div>
+
               <div className="p-3 bg-slate-100 rounded-xl space-y-3">
                 <label className="block text-xs font-bold text-slate-700 flex items-center gap-1"><ShoppingBag size={14}/>購物清單</label>
                 <div className="space-y-2">
@@ -1102,6 +1382,32 @@ export default function TripApp({ uid, currentUserUid, tripId, initialData, read
               <div><label className="block text-xs font-bold text-slate-500 mb-1">門票資訊</label><input type="text" className="w-full border rounded-lg p-2 text-sm bg-slate-50 focus:ring-2 focus:ring-indigo-300 outline-none" placeholder="票價或購票狀況" value={editingItem.tickets||''} onChange={e=>setEditingItem({...editingItem,tickets:e.target.value})}/></div>
               <div className="pt-4 pb-4">
                 <button onClick={()=>saveItineraryItem(editingItem)} className="w-full py-3 bg-indigo-600 text-white font-bold rounded-xl shadow-md hover:bg-indigo-700">儲存行程</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ══ MARKDOWN IMPORT MODAL ══ */}
+      {isMarkdownImportOpen && (
+        <div className="fixed inset-0 bg-slate-900/40 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
+          <div className="bg-white w-full sm:max-w-md rounded-t-3xl sm:rounded-2xl max-h-[90vh] overflow-y-auto shadow-xl">
+            <div className="sticky top-0 bg-white/95 backdrop-blur-sm p-4 border-b flex justify-between items-center z-10">
+              <h2 className="font-bold text-lg">📋 匯入 Markdown 行程</h2>
+              <button onClick={()=>{setIsMarkdownImportOpen(false);setMarkdownText('');setMarkdownStatus('');}} className="p-2 bg-slate-100 rounded-full hover:bg-slate-200"><X size={20}/></button>
+            </div>
+            <div className="p-5 space-y-4">
+              <p className="text-xs text-slate-500">貼上 Markdown 格式的行程內容，景點與清單項目會加到現有內容的後面。</p>
+              <textarea
+                className="w-full h-64 border border-slate-200 rounded-xl p-3 text-xs font-mono bg-slate-50 outline-none focus:ring-2 focus:ring-indigo-400 resize-none"
+                placeholder={`## 2025-05-01\n- time: 09:00\n  title: 關西國際機場\n  location: 關西國際機場\n  transport: 關空特急 Haruka\n  transport_departure: 09:30\n  transport_duration: 75分鐘\n  transport_price: 3600\n  transport_ticket: true\n\n## 行前清單\n- [ ] 換日幣`}
+                value={markdownText}
+                onChange={e=>setMarkdownText(e.target.value)}
+              />
+              {markdownStatus && <p className="text-sm text-center font-medium text-slate-700">{markdownStatus}</p>}
+              <div className="flex gap-2">
+                <button onClick={downloadSampleMarkdown} className="px-4 py-2.5 bg-slate-100 text-slate-600 rounded-xl text-sm font-bold hover:bg-slate-200">📄 下載範例</button>
+                <button onClick={handleMarkdownImport} disabled={!markdownText.trim()} className="flex-1 py-2.5 bg-indigo-600 text-white rounded-xl text-sm font-bold hover:bg-indigo-700 disabled:opacity-40">匯入</button>
               </div>
             </div>
           </div>

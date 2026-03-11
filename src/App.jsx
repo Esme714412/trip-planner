@@ -129,6 +129,7 @@ export default function App() {
       <TripApp
         uid={ownerUid}
         currentUserUid={user.uid}
+        currentUserName={userProfile?.nickname || userProfile?.displayName || userProfile?.email?.split('@')[0] || '未知'}
         tripId={activeTripId}
         initialData={tripData}
         readOnly={isReadOnly}
