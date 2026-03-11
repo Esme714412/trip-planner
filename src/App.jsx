@@ -8,7 +8,7 @@ import TripApp      from './components/TripApp';
 
 export default function App() {
   const [user,              setUser]              = useState(undefined);
-  const [userProfile,       setUserProfile]       = useState(null);   // ← 新增
+  const [userProfile,       setUserProfile]       = useState(null);
   const [trips,             setTrips]             = useState([]);
   const [sharedTrips,       setSharedTrips]       = useState([]);
   const [sharedTripDataMap, setSharedTripDataMap] = useState({});
@@ -37,7 +37,7 @@ export default function App() {
     return unsub;
   }, [redirectDone]);
 
-  // ── 即時監聽自己的 userProfile（含 nickname）─────────────────────────────
+  // 即時監聽自己的 userProfile（含 nickname）
   useEffect(() => {
     if (!user) { setUserProfile(null); return; }
     const unsub = onSnapshot(doc(db, 'userProfiles', user.uid), snap => {
@@ -55,12 +55,9 @@ export default function App() {
     return unsub;
   }, [user]);
 
-  // ── 被分享的行程 metadata ─────────────────────────────────────────────────
   useEffect(() => {
     if (!user) { setSharedTrips([]); setSharedTripDataMap({}); return; }
-
     const results = {};
-
     const unsubE = onSnapshot(
       query(collection(db, 'sharedTrips'), where('editors', 'array-contains', user.uid)),
       snap => {
@@ -69,7 +66,6 @@ export default function App() {
       },
       err => console.error('❌ editors 查詢失敗:', err)
     );
-
     const unsubV = onSnapshot(
       query(collection(db, 'sharedTrips'), where('viewers', 'array-contains', user.uid)),
       snap => {
@@ -78,41 +74,27 @@ export default function App() {
       },
       err => console.error('❌ viewers 查詢失敗:', err)
     );
-
     return () => { unsubE(); unsubV(); };
   }, [user]);
 
-  // ── 被分享的行程：補齊完整資料 ────────────────────────────────────────────
   useEffect(() => {
     if (sharedTrips.length === 0) { setSharedTripDataMap({}); return; }
-
     const unsubs = [];
     const dataMap = {};
-
     sharedTrips.forEach(meta => {
       const tripRef = doc(db, 'users', meta.ownerUid, 'trips', meta.tripId);
-      const unsub = onSnapshot(
-        tripRef,
-        snap => {
-          if (snap.exists()) {
-            dataMap[meta.tripId] = {
-              ...snap.data(),
-              id: snap.id,
-              ownerUid: meta.ownerUid,
-              sharedRole: meta.sharedRole,
-              editors: meta.editors || [],
-              viewers: meta.viewers || [],
-            };
-          } else {
-            delete dataMap[meta.tripId];
-          }
-          setSharedTripDataMap({ ...dataMap });
-        },
-        err => console.error('❌ 行程資料讀取失敗:', err.code, err.message)
-      );
+      const unsub = onSnapshot(tripRef, snap => {
+        if (snap.exists()) {
+          dataMap[meta.tripId] = {
+            ...snap.data(), id: snap.id,
+            ownerUid: meta.ownerUid, sharedRole: meta.sharedRole,
+            editors: meta.editors || [], viewers: meta.viewers || [],
+          };
+        } else { delete dataMap[meta.tripId]; }
+        setSharedTripDataMap({ ...dataMap });
+      }, err => console.error('❌ 行程資料讀取失敗:', err.code, err.message));
       unsubs.push(unsub);
     });
-
     return () => unsubs.forEach(u => u());
   }, [sharedTrips]);
 
@@ -130,8 +112,7 @@ export default function App() {
     const myTrip         = trips.find(t => t.id === activeTripId);
     const sharedMeta     = sharedTrips.find(t => t.tripId === activeTripId);
     const sharedTripData = sharedTripDataMap[activeTripId];
-
-    const tripData = myTrip || sharedTripData;
+    const tripData       = myTrip || sharedTripData;
 
     if (!tripData) {
       return (
@@ -141,12 +122,13 @@ export default function App() {
       );
     }
 
-    const ownerUid   = myTrip ? user.uid : sharedMeta?.ownerUid;
-    const isReadOnly = sharedMeta?.sharedRole === 'viewer';
+    const ownerUid       = myTrip ? user.uid : sharedMeta?.ownerUid;
+    const isReadOnly     = sharedMeta?.sharedRole === 'viewer';
 
     return (
       <TripApp
         uid={ownerUid}
+        currentUserUid={user.uid}
         tripId={activeTripId}
         initialData={tripData}
         readOnly={isReadOnly}
@@ -160,7 +142,7 @@ export default function App() {
   return (
     <TripSelector
       uid={user.uid}
-      userProfile={userProfile}     // ← 傳入 userProfile
+      userProfile={userProfile}
       trips={trips}
       sharedTrips={sharedTripsWithData}
       onSelect={id => setActiveTripId(id)}
