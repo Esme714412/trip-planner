@@ -242,6 +242,13 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
   const checklistRef = useRef(null);
   const [checklistScrollRatio, setChecklistScrollRatio] = useState(0);
 
+  // 長按拖曳排序
+  const [draggingId,   setDraggingId]   = useState(null);
+  const [dragOverId,   setDragOverId]   = useState(null);
+  const longPressRef   = useRef(null);
+  const dragTouchY     = useRef(null);
+  const itemRefs       = useRef({});
+
   const tripNameRef = useRef(null);
   const TripIcon = TRIP_ICONS[tripIconIndex % TRIP_ICONS.length];
 
@@ -346,6 +353,71 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
 
   const deleteItineraryItem = async (id) => {
     if (await confirm('確定要刪除這個行程嗎？')) setItinerary(itinerary.filter(i => i.id !== id));
+  };
+
+  // 長按拖曳排序
+  const handleDragTouchStart = (e, id) => {
+    dragTouchY.current = e.touches[0].clientY;
+    longPressRef.current = setTimeout(() => {
+      setDraggingId(id);
+      navigator.vibrate?.(40);
+    }, 500);
+  };
+
+  const handleDragTouchMove = (e) => {
+    if (!draggingId) {
+      clearTimeout(longPressRef.current);
+      return;
+    }
+    e.preventDefault();
+    const y = e.touches[0].clientY;
+    // find which item the touch is over
+    let found = null;
+    for (const [itemId, el] of Object.entries(itemRefs.current)) {
+      if (!el) continue;
+      const rect = el.getBoundingClientRect();
+      if (y >= rect.top && y <= rect.bottom) { found = itemId; break; }
+    }
+    if (found && found !== draggingId) setDragOverId(found);
+  };
+
+  const handleDragTouchEnd = () => {
+    clearTimeout(longPressRef.current);
+    if (draggingId && dragOverId && draggingId !== dragOverId) {
+      const arr = [...itinerary];
+      const fromIdx = arr.findIndex(i => i.id === draggingId);
+      const toIdx   = arr.findIndex(i => i.id === dragOverId);
+      if (fromIdx !== -1 && toIdx !== -1) {
+        // 跨天時同步日期
+        const item = { ...arr[fromIdx], date: arr[toIdx].date };
+        arr.splice(fromIdx, 1);
+        arr.splice(toIdx, 0, item);
+        setItinerary(arr);
+      }
+    }
+    setDraggingId(null);
+    setDragOverId(null);
+    dragTouchY.current = null;
+  };
+
+  // 桌面端 drag & drop
+  const handleDragStart = (e, id) => { e.dataTransfer.effectAllowed = 'move'; setDraggingId(id); };
+  const handleDragOver  = (e, id) => { e.preventDefault(); if (id !== draggingId) setDragOverId(id); };
+  const handleDrop      = (e, id) => {
+    e.preventDefault();
+    if (draggingId && id && draggingId !== id) {
+      const arr = [...itinerary];
+      const fromIdx = arr.findIndex(i => i.id === draggingId);
+      const toIdx   = arr.findIndex(i => i.id === id);
+      if (fromIdx !== -1 && toIdx !== -1) {
+        const item = { ...arr[fromIdx], date: arr[toIdx].date };
+        arr.splice(fromIdx, 1);
+        arr.splice(toIdx, 0, item);
+        setItinerary(arr);
+      }
+    }
+    setDraggingId(null);
+    setDragOverId(null);
   };
 
   // ── Checklist ─────────────────────────────────────────────────────────────
@@ -875,20 +947,41 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                   </div>
 
                   {isEditMode ? (
-                    <div className="space-y-3">
-                      {byDate[dateStr].map((item,dayIdx)=>{
-                        const gi=itinerary.findIndex(i=>i.id===item.id);
-                        const prev=dayIdx>0?byDate[dateStr][dayIdx-1]:null;
-                        const warn=prev&&(item.time||'')<(prev.time||'');
-                        return(
-                          <div key={item.id} className={`bg-white rounded-xl shadow-sm border p-3 flex gap-3 items-center transition-colors ${warn?'border-red-300 bg-red-50':'border-slate-200'}`}>
-                            <div className="flex flex-col gap-1">
-                              <button onClick={()=>moveItem(gi,'up')}   disabled={gi===0}                   className="p-1 text-slate-400 hover:text-indigo-600 disabled:opacity-20"><ChevronUp   size={20}/></button>
-                              <button onClick={()=>moveItem(gi,'down')} disabled={gi===itinerary.length-1} className="p-1 text-slate-400 hover:text-indigo-600 disabled:opacity-20"><ChevronDown size={20}/></button>
+                    <div
+                      className="space-y-3"
+                      onTouchMove={handleDragTouchMove}
+                      onTouchEnd={handleDragTouchEnd}
+                    >
+                      {byDate[dateStr].map((item)=>{
+                        const isDragging = draggingId === item.id;
+                        const isOver     = dragOverId  === item.id;
+                        return (
+                          <div
+                            key={item.id}
+                            ref={el => itemRefs.current[item.id] = el}
+                            draggable
+                            onDragStart={e=>handleDragStart(e, item.id)}
+                            onDragOver={e=>handleDragOver(e, item.id)}
+                            onDrop={e=>handleDrop(e, item.id)}
+                            onDragEnd={()=>{setDraggingId(null);setDragOverId(null);}}
+                            className={`bg-white rounded-xl shadow-sm border p-3 flex gap-3 items-center transition-all select-none
+                              ${isDragging ? 'opacity-40 scale-95' : ''}
+                              ${isOver && !isDragging ? 'border-indigo-400 border-2 bg-indigo-50' : 'border-slate-200'}
+                            `}
+                          >
+                            {/* 拖曳把手 — 長按啟動（手機）/ 直接拖（桌面） */}
+                            <div
+                              className={`flex flex-col items-center justify-center gap-0.5 cursor-grab active:cursor-grabbing px-1 py-2 rounded-lg transition-colors ${draggingId === item.id ? 'bg-indigo-100' : 'text-slate-300 hover:text-indigo-400 hover:bg-indigo-50'}`}
+                              onTouchStart={e=>handleDragTouchStart(e, item.id)}
+                              title="長按拖曳排序"
+                            >
+                              <div className="w-3.5 h-0.5 bg-current rounded mb-0.5"/>
+                              <div className="w-3.5 h-0.5 bg-current rounded mb-0.5"/>
+                              <div className="w-3.5 h-0.5 bg-current rounded"/>
                             </div>
                             <div className="flex-1 min-w-0 cursor-pointer" onClick={()=>{setEditingItem(item);setIsEditModalOpen(true);}}>
                               <div className="flex items-center gap-2 mb-1">
-                                <span className={`font-bold text-sm ${warn?'text-red-600':'text-indigo-600'}`}>{item.time}{warn&&' ⚠️'}</span>
+                                <span className="font-bold text-sm text-indigo-600">{item.time}</span>
                                 <span className="font-bold truncate text-slate-800">{item.title}</span>
                               </div>
                               <div className="text-xs text-slate-500 truncate flex items-center gap-1"><MapPin size={12}/>{item.location||'無地點'}</div>
@@ -958,10 +1051,7 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                                 {/* 記一筆（唯讀時隱藏） */}
                                 {!readOnly&&<button onClick={()=>setAddingExpenseFor(item)} className="flex-1 flex justify-center items-center gap-1 py-2 bg-slate-100 text-slate-700 rounded-lg text-sm font-medium hover:bg-slate-200"><DollarSign size={16}/>記一筆</button>}
                                 {item.location&&(
-                                  <a href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(item.location)}`} target="_blank" rel="noreferrer" className="flex-1 flex justify-center items-center gap-1 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 shadow-sm"><Navigation size={16}/>導航到這裡</a>
-                                )}
-                                {next?.location&&(
-                                  <a href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(next.location)}`} target="_blank" rel="noreferrer" className="flex justify-center items-center gap-1 py-2 px-3 bg-slate-200 text-slate-700 rounded-lg text-sm font-medium hover:bg-slate-300"><Navigation size={14}/>下一站</a>
+                                  <a href={`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(item.location)}`} target="_blank" rel="noreferrer" className="flex-1 flex justify-center items-center gap-1 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 shadow-sm"><Navigation size={16}/>導航到這裡</a>
                                 )}
                               </div>
                             </div>
@@ -1302,22 +1392,10 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
               </div>
               <div><label className="block text-xs font-bold text-slate-500 mb-1">景點 / 標題</label><input type="text" className="w-full border rounded-lg p-2 text-sm bg-slate-50 focus:ring-2 focus:ring-indigo-300 outline-none" placeholder="例如：奇美博物館" value={editingItem.title||''} onChange={e=>setEditingItem({...editingItem,title:e.target.value})}/></div>
 
-              {/* 地點 + Google Maps 連結解析 */}
+              {/* 地點 */}
               <div>
                 <label className="block text-xs font-bold text-slate-500 mb-1">地點（供 Google 地圖搜尋）</label>
-                <div className="relative mb-1"><MapPin size={16} className="absolute left-3 top-2.5 text-slate-400"/><input type="text" className="w-full border rounded-lg p-2 pl-9 text-sm bg-slate-50 focus:ring-2 focus:ring-indigo-300 outline-none" placeholder="地址或地標名稱" value={editingItem.location||''} onChange={e=>setEditingItem({...editingItem,location:e.target.value})}/></div>
-                <div className="flex gap-2 mt-1">
-                  <input
-                    type="text"
-                    placeholder="貼上 Google Maps 連結自動帶入地點..."
-                    className="flex-1 border border-dashed border-indigo-300 rounded-lg px-3 py-1.5 text-xs bg-indigo-50 outline-none focus:border-indigo-400"
-                    onChange={e => {
-                      const parsed = parseGoogleMapsUrl(e.target.value);
-                      if (parsed) { setEditingItem(prev => ({...prev, location: parsed})); e.target.value = ''; }
-                    }}
-                  />
-                  <span className="text-xs text-slate-400 self-center shrink-0">自動解析</span>
-                </div>
+                <div className="relative"><MapPin size={16} className="absolute left-3 top-2.5 text-slate-400"/><input type="text" className="w-full border rounded-lg p-2 pl-9 text-sm bg-slate-50 focus:ring-2 focus:ring-indigo-300 outline-none" placeholder="地址或地標名稱（可直接貼 Google Maps 店家名稱）" value={editingItem.location||''} onChange={e=>setEditingItem({...editingItem,location:e.target.value})}/></div>
               </div>
 
               <div className="grid grid-cols-2 gap-3">
