@@ -242,12 +242,8 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
   const checklistRef = useRef(null);
   const [checklistScrollRatio, setChecklistScrollRatio] = useState(0);
 
-  // 長按拖曳排序
-  const [draggingId,   setDraggingId]   = useState(null);
-  const [dragOverId,   setDragOverId]   = useState(null);
-  const longPressRef   = useRef(null);
-  const dragTouchY     = useRef(null);
-  const itemRefs       = useRef({});
+  // 點選移動排序（取代拖曳）
+  const [movingId, setMovingId] = useState(null); // 正在移動中的景點 id
 
   const tripNameRef = useRef(null);
   const TripIcon = TRIP_ICONS[tripIconIndex % TRIP_ICONS.length];
@@ -356,68 +352,22 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
   };
 
   // 長按拖曳排序
-  const handleDragTouchStart = (e, id) => {
-    dragTouchY.current = e.touches[0].clientY;
-    longPressRef.current = setTimeout(() => {
-      setDraggingId(id);
-      navigator.vibrate?.(40);
-    }, 500);
-  };
-
-  const handleDragTouchMove = (e) => {
-    if (!draggingId) {
-      clearTimeout(longPressRef.current);
-      return;
-    }
-    e.preventDefault();
-    const y = e.touches[0].clientY;
-    // find which item the touch is over
-    let found = null;
-    for (const [itemId, el] of Object.entries(itemRefs.current)) {
-      if (!el) continue;
-      const rect = el.getBoundingClientRect();
-      if (y >= rect.top && y <= rect.bottom) { found = itemId; break; }
-    }
-    if (found && found !== draggingId) setDragOverId(found);
-  };
-
-  const handleDragTouchEnd = () => {
-    clearTimeout(longPressRef.current);
-    if (draggingId && dragOverId && draggingId !== dragOverId) {
-      const arr = [...itinerary];
-      const fromIdx = arr.findIndex(i => i.id === draggingId);
-      const toIdx   = arr.findIndex(i => i.id === dragOverId);
-      if (fromIdx !== -1 && toIdx !== -1) {
-        // 跨天時同步日期
-        const item = { ...arr[fromIdx], date: arr[toIdx].date };
-        arr.splice(fromIdx, 1);
-        arr.splice(toIdx, 0, item);
-        setItinerary(arr);
-      }
-    }
-    setDraggingId(null);
-    setDragOverId(null);
-    dragTouchY.current = null;
-  };
-
-  // 桌面端 drag & drop
-  const handleDragStart = (e, id) => { e.dataTransfer.effectAllowed = 'move'; setDraggingId(id); };
-  const handleDragOver  = (e, id) => { e.preventDefault(); if (id !== draggingId) setDragOverId(id); };
-  const handleDrop      = (e, id) => {
-    e.preventDefault();
-    if (draggingId && id && draggingId !== id) {
-      const arr = [...itinerary];
-      const fromIdx = arr.findIndex(i => i.id === draggingId);
-      const toIdx   = arr.findIndex(i => i.id === id);
-      if (fromIdx !== -1 && toIdx !== -1) {
-        const item = { ...arr[fromIdx], date: arr[toIdx].date };
-        arr.splice(fromIdx, 1);
-        arr.splice(toIdx, 0, item);
-        setItinerary(arr);
-      }
-    }
-    setDraggingId(null);
-    setDragOverId(null);
+  // 點選移動：點「移動」選中 → 點目標景點插入到該位置之前
+  const handleTapMove = (targetId) => {
+    if (!movingId) return;
+    if (movingId === targetId) { setMovingId(null); return; }
+    setItinerary(prev => {
+      const arr = [...prev];
+      const fromIdx = arr.findIndex(i => i.id === movingId);
+      const toIdx   = arr.findIndex(i => i.id === targetId);
+      if (fromIdx === -1 || toIdx === -1) return prev;
+      const item = { ...arr[fromIdx], date: arr[toIdx].date };
+      arr.splice(fromIdx, 1);
+      const newTo = arr.findIndex(i => i.id === targetId);
+      arr.splice(newTo, 0, item);
+      return arr;
+    });
+    setMovingId(null);
   };
 
   // ── Checklist ─────────────────────────────────────────────────────────────
@@ -792,7 +742,7 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
             </div>
             {/* 編輯切換（唯讀時隱藏） */}
             {!readOnly && (
-              <button onClick={()=>setIsEditMode(!isEditMode)} className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold shadow-sm whitespace-nowrap transition-colors ${isEditMode?'bg-indigo-100 text-indigo-700 border border-indigo-200':'bg-white text-slate-600 border border-slate-200'}`}>
+              <button onClick={()=>{ setIsEditMode(m => { if (m) setMovingId(null); return !m; }); }} className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold shadow-sm whitespace-nowrap transition-colors ${isEditMode?'bg-indigo-100 text-indigo-700 border border-indigo-200':'bg-white text-slate-600 border border-slate-200'}`}>
                 {isEditMode?<><ToggleRight size={16} className="text-indigo-600"/> 編輯中</>:<><ToggleLeft size={16} className="text-slate-400"/> 瀏覽模式</>}
               </button>
             )}
@@ -947,49 +897,50 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                   </div>
 
                   {isEditMode ? (
-                    <div
-                      className="space-y-3"
-                      onTouchMove={handleDragTouchMove}
-                      onTouchEnd={handleDragTouchEnd}
-                    >
-                      {byDate[dateStr].map((item)=>{
-                        const isDragging = draggingId === item.id;
-                        const isOver     = dragOverId  === item.id;
+                    <div className="space-y-2">
+                      {byDate[dateStr].map((item) => {
+                        const isMoving = movingId === item.id;
+                        const isTarget = movingId && movingId !== item.id;
                         return (
                           <div
                             key={item.id}
-                            ref={el => itemRefs.current[item.id] = el}
-                            draggable
-                            onDragStart={e=>handleDragStart(e, item.id)}
-                            onDragOver={e=>handleDragOver(e, item.id)}
-                            onDrop={e=>handleDrop(e, item.id)}
-                            onDragEnd={()=>{setDraggingId(null);setDragOverId(null);}}
-                            className={`bg-white rounded-xl shadow-sm border p-3 flex gap-3 items-center transition-all select-none
-                              ${isDragging ? 'opacity-40 scale-95' : ''}
-                              ${isOver && !isDragging ? 'border-indigo-400 border-2 bg-indigo-50' : 'border-slate-200'}
+                            className={`bg-white rounded-xl shadow-sm border p-3 flex gap-3 items-center transition-all
+                              ${isMoving  ? 'border-indigo-500 bg-indigo-50 ring-2 ring-indigo-300' : ''}
+                              ${isTarget  ? 'border-dashed border-indigo-300 hover:bg-indigo-50 cursor-pointer' : ''}
+                              ${!isMoving && !isTarget ? 'border-slate-200' : ''}
                             `}
+                            onClick={() => isTarget && handleTapMove(item.id)}
                           >
-                            {/* 拖曳把手 — 長按啟動（手機）/ 直接拖（桌面） */}
-                            <div
-                              className={`flex flex-col items-center justify-center gap-0.5 cursor-grab active:cursor-grabbing px-1 py-2 rounded-lg transition-colors ${draggingId === item.id ? 'bg-indigo-100' : 'text-slate-300 hover:text-indigo-400 hover:bg-indigo-50'}`}
-                              onTouchStart={e=>handleDragTouchStart(e, item.id)}
-                              title="長按拖曳排序"
+                            {/* 移動按鈕 */}
+                            <button
+                              onClick={e => { e.stopPropagation(); setMovingId(isMoving ? null : item.id); }}
+                              className={`shrink-0 w-8 h-8 flex flex-col items-center justify-center gap-0.5 rounded-lg transition-colors
+                                ${isMoving ? 'bg-indigo-500 text-white' : 'text-slate-300 hover:text-indigo-500 hover:bg-indigo-50'}`}
+                              title={isMoving ? '取消移動' : '點此選取，再點目標位置'}
                             >
-                              <div className="w-3.5 h-0.5 bg-current rounded mb-0.5"/>
-                              <div className="w-3.5 h-0.5 bg-current rounded mb-0.5"/>
                               <div className="w-3.5 h-0.5 bg-current rounded"/>
-                            </div>
-                            <div className="flex-1 min-w-0 cursor-pointer" onClick={()=>{setEditingItem(item);setIsEditModalOpen(true);}}>
-                              <div className="flex items-center gap-2 mb-1">
+                              <div className="w-3.5 h-0.5 bg-current rounded"/>
+                              <div className="w-3.5 h-0.5 bg-current rounded"/>
+                            </button>
+
+                            <div className="flex-1 min-w-0" onClick={e => { if (!isTarget) { e.stopPropagation(); setEditingItem(item); setIsEditModalOpen(true); } }}>
+                              <div className="flex items-center gap-2 mb-0.5">
                                 <span className="font-bold text-sm text-indigo-600">{item.time}</span>
                                 <span className="font-bold truncate text-slate-800">{item.title}</span>
+                                {isMoving && <span className="text-xs bg-indigo-500 text-white px-1.5 py-0.5 rounded-full shrink-0">移動中</span>}
                               </div>
-                              <div className="text-xs text-slate-500 truncate flex items-center gap-1"><MapPin size={12}/>{item.location||'無地點'}</div>
+                              <div className="text-xs text-slate-400 truncate flex items-center gap-1">
+                                <MapPin size={11}/>{item.location || '無地點'}
+                                {isTarget && <span className="ml-auto text-indigo-500 font-bold">點此移到這裡 ↑</span>}
+                              </div>
                             </div>
-                            <div className="flex gap-2">
-                              <button onClick={()=>{setEditingItem(item);setIsEditModalOpen(true);}} className="p-2 text-blue-600 bg-blue-50 hover:bg-blue-100 rounded-lg"><Edit2 size={16}/></button>
-                              <button onClick={()=>deleteItineraryItem(item.id)}                    className="p-2 text-red-600  bg-red-50  hover:bg-red-100  rounded-lg"><Trash2 size={16}/></button>
-                            </div>
+
+                            {!movingId && (
+                              <div className="flex gap-1.5 shrink-0">
+                                <button onClick={e => { e.stopPropagation(); setEditingItem(item); setIsEditModalOpen(true); }} className="p-2 text-blue-600 bg-blue-50 hover:bg-blue-100 rounded-lg"><Edit2 size={16}/></button>
+                                <button onClick={e => { e.stopPropagation(); deleteItineraryItem(item.id); }} className="p-2 text-red-500 bg-red-50 hover:bg-red-100 rounded-lg"><Trash2 size={16}/></button>
+                              </div>
+                            )}
                           </div>
                         );
                       })}
