@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { doc, updateDoc, serverTimestamp, setDoc, getDocs, getDoc, collection, query, where } from 'firebase/firestore';
 import { db } from '../firebase/config';
 import {
@@ -8,7 +8,7 @@ import {
   ListTodo, ToggleLeft, ToggleRight, Calendar,
   Settings, Lock, Unlock, Tag, Save, Star, Plane, Luggage,
   Camera as CameraIcon, ArrowLeft, ArrowRight,
-  Share2, ChevronUpIcon, WifiOff,
+  Share2, ChevronUpIcon, WifiOff, Zap, MoveRight,
 } from 'lucide-react';
 import ExpenseFormModal from './ExpenseFormModal';
 import { useConfirm } from './ConfirmModal';
@@ -159,6 +159,20 @@ function parseMarkdown(mdText) {
   return { itineraryItems, checklistItems };
 }
 
+// 舊資料單段交通 → 新多段格式
+function normalizeTransportSegments(item) {
+  if (item.transportSegments && item.transportSegments.length > 0) return item.transportSegments;
+  if (item.transport || item.transportDeparture || item.transportDuration || item.transportPrice || item.transportUrl) {
+    return [{ id: crypto.randomUUID(), mode: item.transport||'', departure: item.transportDeparture||'', duration: item.transportDuration||'', price: item.transportPrice||'', url: item.transportUrl||'', needTicket: item.transportNeedTicket||false }];
+  }
+  return [];
+}
+
+// 空白交通段
+function emptySegment() {
+  return { id: crypto.randomUUID(), mode:'', departure:'', duration:'', price:'', url:'', needTicket:false };
+}
+
 export default function TripApp({ uid, currentUserUid, currentUserName, tripId, initialData, readOnly = false, onBack }) {
   const { confirm, ConfirmUI } = useConfirm();
   const isOwner = uid === currentUserUid;
@@ -175,6 +189,7 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
   const [checklist,     setChecklist]     = useState(initialData.checklist     || []);
   const [itinerary,     setItinerary]     = useState(initialData.itinerary     || []);
   const [expenses,      setExpenses]      = useState(initialData.expenses      || []);
+  const [flexTodos,     setFlexTodos]     = useState(initialData.flexTodos     || []);
 
   // ── UI state ──────────────────────────────────────────────────────────────
   const [mode,             setMode]             = useState('checklist');
@@ -189,11 +204,13 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
   const [isEditingName,    setIsEditingName]    = useState(false);
   const [saveStatus,       setSaveStatus]       = useState('saved');
   const [isEditingDates,   setIsEditingDates]   = useState(false);
+  const [flexCollapsed,    setFlexCollapsed]    = useState(false);
+  const [expandedTransport,setExpandedTransport] = useState(new Set()); // 展開交通詳情的景點 id
+  const [isOptionalOpen,   setIsOptionalOpen]   = useState(false); // 編輯 modal 的選填區
 
   // ── Offline & scroll state ─────────────────────────────────────────────
   const [isOnline,         setIsOnline]         = useState(navigator.onLine);
   const [showScrollTop,    setShowScrollTop]    = useState(false);
-  const mainRef = useRef(null);
 
   useEffect(() => {
     const on  = () => setIsOnline(true);
@@ -204,11 +221,9 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
   }, []);
 
   useEffect(() => {
-    const el = mainRef.current;
-    if (!el) return;
-    const handler = () => setShowScrollTop(el.scrollTop > 300);
-    el.addEventListener('scroll', handler);
-    return () => el.removeEventListener('scroll', handler);
+    const handler = () => setShowScrollTop(window.scrollY > 300);
+    window.addEventListener('scroll', handler, { passive: true });
+    return () => window.removeEventListener('scroll', handler);
   }, []);
 
   // ── Share state ───────────────────────────────────────────────────────────
@@ -283,8 +298,8 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
   const payload = useMemo(() => ({
     name: tripName, iconIndex: tripIconIndex,
     tripStartDate, tripEndDate,
-    users, rates, baseCurrency, categories, checklist, itinerary, expenses,
-  }), [tripName, tripIconIndex, tripStartDate, tripEndDate, users, rates, baseCurrency, categories, checklist, itinerary, expenses]);
+    users, rates, baseCurrency, categories, checklist, itinerary, expenses, flexTodos,
+  }), [tripName, tripIconIndex, tripStartDate, tripEndDate, users, rates, baseCurrency, categories, checklist, itinerary, expenses, flexTodos]);
 
   const debouncedPayload = useDebounce(payload, 1200);
   const isFirstSave = useRef(true);
@@ -340,11 +355,26 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
   };
 
   const saveItineraryItem = (item) => {
-    const withMeta = { ...item, lastEditedBy: currentUserName || '未知', lastEditedAt: new Date().toISOString() };
+    // 確保儲存 transportSegments，舊欄位保留供相容
+    const segments = item.transportSegments || [];
+    const withMeta = {
+      ...item,
+      transportSegments: segments,
+      // 同步舊欄位（第一段）供 CSV 匯出等相容使用
+      transport: segments[0]?.mode || '',
+      transportDeparture: segments[0]?.departure || '',
+      transportDuration: segments[0]?.duration || '',
+      transportPrice: segments[0]?.price || '',
+      transportUrl: segments[0]?.url || '',
+      transportNeedTicket: segments[0]?.needTicket || false,
+      lastEditedBy: currentUserName || '未知',
+      lastEditedAt: new Date().toISOString(),
+    };
     if (item.id) setItinerary(itinerary.map(i => i.id === item.id ? withMeta : i));
     else         setItinerary([...itinerary, { ...withMeta, id: crypto.randomUUID() }]);
     setIsEditModalOpen(false);
     setModalNewShop('');
+    setIsOptionalOpen(false);
   };
 
   const deleteItineraryItem = async (id) => {
@@ -630,7 +660,7 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
-    <div ref={mainRef} className="min-h-screen bg-slate-50 font-sans text-slate-800 pb-24 overflow-y-auto h-screen">
+    <div className="min-h-screen bg-slate-50 font-sans text-slate-800 pb-24">
       {ConfirmUI}
 
       {/* 離線提示橫幅 */}
@@ -676,11 +706,12 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
             </h1>
           )}
 
-          {/* 儲存狀態 */}
-          <div className="shrink-0 text-xs font-medium text-slate-400 flex items-center gap-1">
-            {saveStatus==='saving' && <><span className="animate-pulse">●</span> 儲存中</>}
-            {saveStatus==='saved'  && <><span className="text-green-400">●</span> 已同步</>}
-            {saveStatus==='error'  && <><span className="text-red-400">●</span> 失敗</>}
+          {/* 儲存狀態 — 只顯示小圓點，hover 才顯示文字 */}
+          <div className="shrink-0 relative group">
+            <div className={`w-2 h-2 rounded-full transition-colors ${saveStatus==='saving'?'bg-amber-400 animate-pulse':saveStatus==='error'?'bg-red-400':'bg-green-400'}`}/>
+            <div className="absolute right-0 top-4 hidden group-hover:block bg-slate-700 text-white text-xs rounded px-2 py-1 whitespace-nowrap z-50">
+              {saveStatus==='saving'?'儲存中...':saveStatus==='error'?'儲存失敗':'已同步'}
+            </div>
           </div>
 
           {/* 分享與設定按鈕（唯讀時隱藏） */}
@@ -872,6 +903,78 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
         {/* ══ ITINERARY ══ */}
         {mode==='itinerary' && (
           <div className="space-y-6">
+
+            {/* ── 彈性待辦區塊 ── */}
+            {(!readOnly || flexTodos.length > 0) && (
+              <div className="bg-amber-50 border border-amber-200 rounded-2xl overflow-hidden">
+                <button
+                  onClick={()=>setFlexCollapsed(v=>!v)}
+                  className="w-full flex items-center justify-between px-4 py-3 hover:bg-amber-100 transition-colors"
+                >
+                  <div className="flex items-center gap-2 font-bold text-amber-800 text-sm">
+                    <Zap size={16} className="text-amber-500"/>
+                    彈性待辦
+                    <span className="text-xs bg-amber-200 text-amber-700 px-1.5 py-0.5 rounded-full">{flexTodos.filter(t=>!t.checked).length} 項</span>
+                  </div>
+                  {flexCollapsed ? <ChevronDown size={16} className="text-amber-500"/> : <ChevronUp size={16} className="text-amber-500"/>}
+                </button>
+                {!flexCollapsed && (
+                  <div className="px-4 pb-4 space-y-2">
+                    {flexTodos.map(todo=>(
+                      <div key={todo.id} className={`bg-white border rounded-xl p-3 flex gap-3 items-start transition-colors ${todo.checked?'border-slate-100 opacity-60':'border-amber-100'}`}>
+                        <button onClick={()=>setFlexTodos(p=>p.map(t=>t.id===todo.id?{...t,checked:!t.checked}:t))}
+                          className={`mt-0.5 w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 transition-colors ${todo.checked?'bg-amber-400 border-amber-400':'border-amber-300'}`}>
+                          {todo.checked&&<Check size={11} className="text-white"/>}
+                        </button>
+                        <div className="flex-1 min-w-0">
+                          <div className={`font-bold text-sm ${todo.checked?'line-through text-slate-400':'text-slate-800'}`}>{todo.title}</div>
+                          {todo.notes&&<div className="text-xs text-slate-500 mt-0.5">{todo.notes}</div>}
+                        </div>
+                        {!readOnly && (
+                          <div className="flex gap-1 shrink-0">
+                            {/* 移入行程 */}
+                            <select
+                              className="text-xs border border-indigo-200 rounded-lg px-1.5 py-1 bg-indigo-50 text-indigo-700 outline-none max-w-[90px]"
+                              defaultValue=""
+                              onChange={e=>{
+                                if (!e.target.value) return;
+                                const date = e.target.value;
+                                setItinerary(prev=>[...prev,{id:crypto.randomUUID(),title:todo.title,notes:todo.notes||'',date,time:'',location:'',transport:'',transportSegments:[],shoppingList:[],tickets:'',lastEditedBy:currentUserName||''}]);
+                                setFlexTodos(p=>p.filter(t=>t.id!==todo.id));
+                              }}
+                            >
+                              <option value="">移入行程...</option>
+                              {tripDateRange.length > 0
+                                ? tripDateRange.map((d,i)=>{const dt=new Date(d);return<option key={d} value={d}>第{i+1}天 {dt.getMonth()+1}/{dt.getDate()}</option>;})
+                                : [...new Set(itinerary.map(i=>i.date))].filter(Boolean).sort().map(d=><option key={d} value={d}>{fmtDate(d)}</option>)
+                              }
+                            </select>
+                            <button onClick={()=>setFlexTodos(p=>p.filter(t=>t.id!==todo.id))} className="p-1 text-slate-400 hover:text-red-500"><X size={14}/></button>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                    {flexTodos.length===0&&<div className="text-xs text-amber-600 py-1 text-center">目前沒有彈性待辦，點下方新增</div>}
+                    {!readOnly && (
+                      <div className="flex gap-2 mt-1">
+                        <input
+                          type="text" placeholder="新增彈性待辦（如：超市採購）" maxLength={30}
+                          className="flex-1 border border-amber-200 rounded-xl px-3 py-2 text-sm bg-white outline-none focus:ring-2 focus:ring-amber-300"
+                          onKeyDown={e=>{
+                            if(e.key==='Enter'&&e.target.value.trim()){
+                              setFlexTodos(p=>[...p,{id:crypto.randomUUID(),title:e.target.value.trim(),notes:'',checked:false}]);
+                              e.target.value='';
+                            }
+                          }}
+                        />
+                        <span className="text-xs text-amber-500 self-center shrink-0">Enter 新增</span>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
             <div className="flex justify-between items-center mb-2">
               <span className="text-sm text-slate-500">{isEditMode?'可修改與調整行程順序（可跨天）':'快速瀏覽行程與導航'}</span>
               {isEditMode&&<button onClick={sortByTime} className="text-xs text-indigo-600 font-bold px-3 py-1.5 bg-indigo-50 rounded-full hover:bg-indigo-100 shadow-sm">依時間排序</button>}
@@ -898,16 +1001,19 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
 
                   {isEditMode ? (
                     <div className="space-y-2">
-                      {byDate[dateStr].map((item) => {
+                      {byDate[dateStr].map((item, dayIdx) => {
                         const isMoving = movingId === item.id;
                         const isTarget = movingId && movingId !== item.id;
+                        const prevItem = byDate[dateStr][dayIdx - 1];
+                        const timeWarn = prevItem && (item.time || '') < (prevItem.time || '');
                         return (
                           <div
                             key={item.id}
                             className={`bg-white rounded-xl shadow-sm border p-3 flex gap-3 items-center transition-all
                               ${isMoving  ? 'border-indigo-500 bg-indigo-50 ring-2 ring-indigo-300' : ''}
                               ${isTarget  ? 'border-dashed border-indigo-300 hover:bg-indigo-50 cursor-pointer' : ''}
-                              ${!isMoving && !isTarget ? 'border-slate-200' : ''}
+                              ${timeWarn && !isMoving && !isTarget ? 'border-red-300 bg-red-50' : ''}
+                              ${!isMoving && !isTarget && !timeWarn ? 'border-slate-200' : ''}
                             `}
                             onClick={() => isTarget && handleTapMove(item.id)}
                           >
@@ -923,9 +1029,9 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                               <div className="w-3.5 h-0.5 bg-current rounded"/>
                             </button>
 
-                            <div className="flex-1 min-w-0" onClick={e => { if (!isTarget) { e.stopPropagation(); setEditingItem(item); setIsEditModalOpen(true); } }}>
+                            <div className="flex-1 min-w-0" onClick={e => { if (!isTarget) { e.stopPropagation(); setEditingItem({...item, transportSegments: normalizeTransportSegments(item)}); setIsOptionalOpen(false); setIsEditModalOpen(true); } }}>
                               <div className="flex items-center gap-2 mb-0.5">
-                                <span className="font-bold text-sm text-indigo-600">{item.time}</span>
+                                <span className={`font-bold text-sm ${timeWarn ? 'text-red-500' : 'text-indigo-600'}`}>{item.time}{timeWarn && ' ⚠️'}</span>
                                 <span className="font-bold truncate text-slate-800">{item.title}</span>
                                 {isMoving && <span className="text-xs bg-indigo-500 text-white px-1.5 py-0.5 rounded-full shrink-0">移動中</span>}
                               </div>
@@ -937,7 +1043,7 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
 
                             {!movingId && (
                               <div className="flex gap-1.5 shrink-0">
-                                <button onClick={e => { e.stopPropagation(); setEditingItem(item); setIsEditModalOpen(true); }} className="p-2 text-blue-600 bg-blue-50 hover:bg-blue-100 rounded-lg"><Edit2 size={16}/></button>
+                                <button onClick={e => { e.stopPropagation(); setEditingItem({...item, transportSegments: normalizeTransportSegments(item)}); setIsOptionalOpen(false); setIsEditModalOpen(true); }} className="p-2 text-blue-600 bg-blue-50 hover:bg-blue-100 rounded-lg"><Edit2 size={16}/></button>
                                 <button onClick={e => { e.stopPropagation(); deleteItineraryItem(item.id); }} className="p-2 text-red-500 bg-red-50 hover:bg-red-100 rounded-lg"><Trash2 size={16}/></button>
                               </div>
                             )}
@@ -1006,7 +1112,35 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                                 )}
                               </div>
                             </div>
-                            {item.transport&&next&&<div className="mt-4 flex items-center gap-2 text-sm text-slate-500 bg-slate-100 w-max px-3 py-1 rounded-full ml-2 border border-slate-200"><Car size={14}/>交通：{item.transport}</div>}
+                            {item.transport&&(()=>{
+                              const segments = normalizeTransportSegments(item);
+                              const isExpanded = expandedTransport.has(item.id);
+                              const summary = segments.length > 0 ? segments.map(s=>s.mode).filter(Boolean).join(' → ') : item.transport;
+                              return (
+                                <div className="mt-4 ml-2">
+                                  <button
+                                    onClick={()=>setExpandedTransport(prev=>{const s=new Set(prev);s.has(item.id)?s.delete(item.id):s.add(item.id);return s;})}
+                                    className="flex items-center gap-2 text-sm text-slate-500 bg-slate-100 px-3 py-1.5 rounded-full border border-slate-200 hover:bg-slate-200 transition-colors"
+                                  >
+                                    <Car size={14}/>{summary}{segments.length>1&&<span className="text-xs bg-slate-300 px-1 rounded">{segments.length}段</span>}{isExpanded?<ChevronUp size={13}/>:<ChevronDown size={13}/>}
+                                  </button>
+                                  {isExpanded && segments.length > 0 && (
+                                    <div className="mt-2 ml-2 space-y-2">
+                                      {segments.map((seg,si)=>(
+                                        <div key={seg.id} className="bg-white border border-slate-200 rounded-xl p-3 text-xs space-y-1">
+                                          <div className="font-bold text-slate-700 flex items-center gap-1"><MoveRight size={12} className="text-indigo-400"/>第{si+1}段：{seg.mode||'未填'}</div>
+                                          {seg.departure&&<div className="text-slate-500 flex gap-3"><span>🕐 發車 {seg.departure}</span></div>}
+                                          {seg.duration&&<div className="text-slate-500">⏱ 預估 {seg.duration}</div>}
+                                          {seg.price&&<div className="text-slate-500">💴 {seg.price}</div>}
+                                          {seg.url&&<a href={seg.url} target="_blank" rel="noreferrer" className="text-indigo-500 underline">🔗 購票連結</a>}
+                                          {seg.needTicket&&<div className="text-amber-600 font-bold">⚠️ 需提前購票</div>}
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })()}
                           </div>
                         );
                       })}
@@ -1021,7 +1155,8 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
               <button onClick={()=>{
                 const dates=[...new Set(itinerary.map(i=>i.date))].filter(Boolean).sort();
                 const last=dates.length>0?dates[dates.length-1]:tripStartDate||new Date().toISOString().split('T')[0];
-                setEditingItem({date:last,title:'',time:'12:00',location:'',transport:'',notes:'',website:'',hours:'',shoppingList:[],tickets:''});
+                setEditingItem({date:last,title:'',time:'12:00',location:'',transport:'',notes:'',website:'',hours:'',shoppingList:[],tickets:'',transportSegments:[]});
+                setIsOptionalOpen(false);
                 setIsEditModalOpen(true);
               }} className="w-full py-3 border-2 border-dashed border-indigo-300 text-indigo-600 font-bold rounded-xl flex justify-center items-center gap-2 hover:bg-indigo-50 transition-colors">
                 <Plus size={20}/> 新增行程景點
@@ -1118,7 +1253,7 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
       {/* ── 回到頂部按鈕 ── */}
       {showScrollTop && (
         <button
-          onClick={() => mainRef.current?.scrollTo({ top: 0, behavior: 'smooth' })}
+          onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
           className="fixed bottom-6 right-6 z-40 bg-indigo-600 text-white p-3 rounded-full shadow-lg hover:bg-indigo-700 transition-all"
           title="回到頂部"
         >
@@ -1312,25 +1447,18 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
           <div className="bg-white w-full sm:max-w-md rounded-t-3xl sm:rounded-2xl max-h-[90vh] overflow-y-auto shadow-xl">
             <div className="sticky top-0 bg-white/95 backdrop-blur-sm p-4 border-b flex justify-between items-center z-10">
               <h2 className="font-bold text-lg">{editingItem.id?'編輯行程':'新增行程'}</h2>
-              <button onClick={()=>setIsEditModalOpen(false)} className="p-2 bg-slate-100 rounded-full hover:bg-slate-200"><X size={20}/></button>
+              <button onClick={()=>{setIsEditModalOpen(false);setIsOptionalOpen(false);}} className="p-2 bg-slate-100 rounded-full hover:bg-slate-200"><X size={20}/></button>
             </div>
             <div className="p-5 space-y-4">
+
+              {/* ── 必填區 ── */}
               <div className="grid grid-cols-4 gap-3">
-                {/* 日期：若有設定旅行區間則顯示天數選單 */}
                 <div className="col-span-2">
                   <label className="block text-xs font-bold text-slate-500 mb-1">日期</label>
                   {tripDateRange.length > 0 ? (
-                    <select
-                      className="w-full border rounded-lg p-2 text-sm bg-slate-50 outline-none"
-                      value={editingItem.date||''}
-                      onChange={e=>setEditingItem({...editingItem,date:e.target.value})}
-                    >
+                    <select className="w-full border rounded-lg p-2 text-sm bg-slate-50 outline-none" value={editingItem.date||''} onChange={e=>setEditingItem({...editingItem,date:e.target.value})}>
                       <option value="">未定日期</option>
-                      {tripDateRange.map((d,i)=>{
-                        const dt=new Date(d);
-                        const label=`第${i+1}天（${dt.getMonth()+1}/${dt.getDate()} ${'日一二三四五六'[dt.getDay()]}）`;
-                        return<option key={d} value={d}>{label}</option>;
-                      })}
+                      {tripDateRange.map((d,i)=>{const dt=new Date(d);return<option key={d} value={d}>第{i+1}天（{dt.getMonth()+1}/{dt.getDate()}）</option>;})}
                     </select>
                   ) : (
                     <input type="date" className="w-full border rounded-lg p-2 text-sm bg-slate-50" value={editingItem.date||''} onChange={e=>setEditingItem({...editingItem,date:e.target.value})}/>
@@ -1341,76 +1469,130 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                   <input type="time" className="w-full border rounded-lg p-2 text-sm bg-slate-50" value={editingItem.time||''} onChange={e=>setEditingItem({...editingItem,time:e.target.value})}/>
                 </div>
               </div>
-              <div><label className="block text-xs font-bold text-slate-500 mb-1">景點 / 標題</label><input type="text" className="w-full border rounded-lg p-2 text-sm bg-slate-50 focus:ring-2 focus:ring-indigo-300 outline-none" placeholder="例如：奇美博物館" value={editingItem.title||''} onChange={e=>setEditingItem({...editingItem,title:e.target.value})}/></div>
 
-              {/* 地點 */}
               <div>
-                <label className="block text-xs font-bold text-slate-500 mb-1">地點（供 Google 地圖搜尋）</label>
-                <div className="relative"><MapPin size={16} className="absolute left-3 top-2.5 text-slate-400"/><input type="text" className="w-full border rounded-lg p-2 pl-9 text-sm bg-slate-50 focus:ring-2 focus:ring-indigo-300 outline-none" placeholder="地址或地標名稱（可直接貼 Google Maps 店家名稱）" value={editingItem.location||''} onChange={e=>setEditingItem({...editingItem,location:e.target.value})}/></div>
+                <label className="block text-xs font-bold text-slate-500 mb-1">景點 / 標題 <span className="text-red-400">*</span></label>
+                <input type="text" className="w-full border rounded-lg p-2 text-sm bg-slate-50 focus:ring-2 focus:ring-indigo-300 outline-none" placeholder="例如：奇美博物館" value={editingItem.title||''} onChange={e=>setEditingItem({...editingItem,title:e.target.value})}/>
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
-                <div><label className="block text-xs font-bold text-slate-500 mb-1">營業時間</label><input type="text" className="w-full border rounded-lg p-2 text-sm bg-slate-50 focus:ring-2 focus:ring-indigo-300 outline-none" placeholder="如：10:00-22:00" value={editingItem.hours||''} onChange={e=>setEditingItem({...editingItem,hours:e.target.value})}/></div>
-                <div><label className="block text-xs font-bold text-slate-500 mb-1">官方網站</label><input type="url" className="w-full border rounded-lg p-2 text-sm bg-slate-50 focus:ring-2 focus:ring-indigo-300 outline-none" placeholder="https://" value={editingItem.website||''} onChange={e=>setEditingItem({...editingItem,website:e.target.value})}/></div>
-              </div>
-              <div><label className="block text-xs font-bold text-slate-500 mb-1">備註 / 提醒</label><textarea className="w-full border rounded-lg p-2 text-sm bg-slate-50 h-20 focus:ring-2 focus:ring-indigo-300 outline-none" placeholder="注意事項..." value={editingItem.notes||''} onChange={e=>setEditingItem({...editingItem,notes:e.target.value})}/></div>
-
-              {/* 交通細節（展開） */}
-              <div className="bg-blue-50/60 rounded-xl p-3 border border-blue-100 space-y-3">
-                <label className="block text-xs font-bold text-blue-700 flex items-center gap-1"><Car size={14}/>前往下一站交通</label>
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <label className="block text-xs text-slate-500 mb-1">交通方式</label>
-                    <input type="text" className="w-full border border-blue-200 rounded-lg p-2 text-sm bg-white outline-none" placeholder="如：火車、巴士" value={editingItem.transport||''} onChange={e=>setEditingItem({...editingItem,transport:e.target.value})}/>
-                  </div>
-                  <div>
-                    <label className="block text-xs text-slate-500 mb-1">預計發車時間</label>
-                    <input type="time" className="w-full border border-blue-200 rounded-lg p-2 text-sm bg-white outline-none" value={editingItem.transportDeparture||''} onChange={e=>setEditingItem({...editingItem,transportDeparture:e.target.value})}/>
-                  </div>
-                  <div>
-                    <label className="block text-xs text-slate-500 mb-1">預估交通時間</label>
-                    <input type="text" className="w-full border border-blue-200 rounded-lg p-2 text-sm bg-white outline-none" placeholder="如：30分鐘" value={editingItem.transportDuration||''} onChange={e=>setEditingItem({...editingItem,transportDuration:e.target.value})}/>
-                  </div>
-                  <div>
-                    <label className="block text-xs text-slate-500 mb-1">票價</label>
-                    <input type="text" className="w-full border border-blue-200 rounded-lg p-2 text-sm bg-white outline-none" placeholder="如：3600" value={editingItem.transportPrice||''} onChange={e=>setEditingItem({...editingItem,transportPrice:e.target.value})}/>
-                  </div>
-                </div>
-                <div>
-                  <label className="block text-xs text-slate-500 mb-1">購票連結</label>
-                  <input type="url" className="w-full border border-blue-200 rounded-lg p-2 text-sm bg-white outline-none" placeholder="https://" value={editingItem.transportUrl||''} onChange={e=>setEditingItem({...editingItem,transportUrl:e.target.value})}/>
-                </div>
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input type="checkbox" checked={editingItem.transportNeedTicket||false}
-                    onChange={e=>{
-                      setEditingItem({...editingItem,transportNeedTicket:e.target.checked});
-                      if (e.target.checked && editingItem.transport) {
-                        const text = `購票：${editingItem.title||editingItem.transport}的交通票`;
-                        if (!checklist.some(c=>c.text===text))
-                          setChecklist(prev=>[...prev,{id:crypto.randomUUID(),text,checked:false}]);
-                      }
-                    }}
-                    className="w-4 h-4 rounded accent-indigo-600"/>
-                  <span className="text-xs font-bold text-blue-700">需提前購票（自動加入行前清單）</span>
-                </label>
+              <div>
+                <label className="block text-xs font-bold text-slate-500 mb-1">地點</label>
+                <div className="relative"><MapPin size={16} className="absolute left-3 top-2.5 text-slate-400"/><input type="text" className="w-full border rounded-lg p-2 pl-9 text-sm bg-slate-50 focus:ring-2 focus:ring-indigo-300 outline-none" placeholder="店家名稱或地址（可從 Google Maps 複製）" value={editingItem.location||''} onChange={e=>setEditingItem({...editingItem,location:e.target.value})}/></div>
               </div>
 
-              <div className="p-3 bg-slate-100 rounded-xl space-y-3">
-                <label className="block text-xs font-bold text-slate-700 flex items-center gap-1"><ShoppingBag size={14}/>購物清單</label>
-                <div className="space-y-2">
-                  {(editingItem.shoppingList||[]).map(s=>(
-                    <div key={s.id} className="flex justify-between items-center bg-white border p-2 rounded-lg text-sm"><span className="truncate flex-1">{s.text}</span><button onClick={()=>delModalShop(s.id)} className="text-slate-400 hover:text-red-500 p-1"><X size={14}/></button></div>
-                  ))}
-                  {!(editingItem.shoppingList?.length>0)&&<div className="text-xs text-slate-400 py-1">目前無項目</div>}
-                </div>
-                <div className="flex gap-2">
-                  <input type="text" className="flex-1 border rounded-lg px-2 py-1.5 text-sm outline-none focus:border-indigo-400" placeholder="要買什麼..." value={modalNewShop} onChange={e=>setModalNewShop(e.target.value)} onKeyDown={e=>e.key==='Enter'&&addModalShop()}/>
-                  <button onClick={addModalShop} className="bg-indigo-600 text-white px-3 py-1.5 rounded-lg text-sm font-bold">新增</button>
-                </div>
+              <div>
+                <label className="block text-xs font-bold text-slate-500 mb-1">交通方式（前往此地）</label>
+                <input type="text" className="w-full border rounded-lg p-2 text-sm bg-slate-50 focus:ring-2 focus:ring-indigo-300 outline-none" placeholder="如：搭地鐵、步行" value={(editingItem.transportSegments?.[0]?.mode ?? editingItem.transport) || ''} onChange={e=>{
+                  const segs = editingItem.transportSegments?.length > 0 ? [...editingItem.transportSegments] : [emptySegment()];
+                  segs[0] = {...segs[0], mode: e.target.value};
+                  setEditingItem({...editingItem, transportSegments: segs});
+                }}/>
               </div>
-              <div><label className="block text-xs font-bold text-slate-500 mb-1">門票資訊</label><input type="text" className="w-full border rounded-lg p-2 text-sm bg-slate-50 focus:ring-2 focus:ring-indigo-300 outline-none" placeholder="票價或購票狀況" value={editingItem.tickets||''} onChange={e=>setEditingItem({...editingItem,tickets:e.target.value})}/></div>
-              <div className="pt-4 pb-4">
-                <button onClick={()=>saveItineraryItem(editingItem)} className="w-full py-3 bg-indigo-600 text-white font-bold rounded-xl shadow-md hover:bg-indigo-700">儲存行程</button>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-500 mb-1">備註</label>
+                <textarea className="w-full border rounded-lg p-2 text-sm bg-slate-50 h-16 focus:ring-2 focus:ring-indigo-300 outline-none resize-none" placeholder="注意事項..." value={editingItem.notes||''} onChange={e=>setEditingItem({...editingItem,notes:e.target.value})}/>
+              </div>
+
+              {/* ── 選填區 ── */}
+              <div>
+                <button
+                  onClick={()=>setIsOptionalOpen(v=>!v)}
+                  className="w-full flex items-center justify-center gap-2 py-2 text-sm font-bold text-slate-500 border border-dashed border-slate-300 rounded-xl hover:bg-slate-50 transition-colors"
+                >
+                  {isOptionalOpen ? <><ChevronUp size={16}/>收起選填欄位</> : <><Plus size={16}/>新增更多資訊（選填）</>}
+                </button>
+              </div>
+
+              {isOptionalOpen && (
+                <div className="space-y-4 pt-1">
+
+                  {/* 交通細節 — 多段 */}
+                  <div className="bg-blue-50/60 rounded-xl p-3 border border-blue-100 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <label className="text-xs font-bold text-blue-700 flex items-center gap-1"><Car size={14}/>交通細節</label>
+                      <button onClick={()=>{const segs=editingItem.transportSegments?.length>0?[...editingItem.transportSegments]:[emptySegment()];setEditingItem({...editingItem,transportSegments:[...segs,emptySegment()]});}} className="text-xs text-indigo-600 font-bold flex items-center gap-0.5 hover:text-indigo-800"><Plus size={13}/>新增一段</button>
+                    </div>
+                    {(editingItem.transportSegments?.length > 0 ? editingItem.transportSegments : []).map((seg, si)=>(
+                      <div key={seg.id} className="bg-white rounded-lg p-3 border border-blue-100 space-y-2">
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="text-xs font-bold text-slate-600">第 {si+1} 段</span>
+                          {si > 0 && <button onClick={()=>setEditingItem({...editingItem,transportSegments:editingItem.transportSegments.filter((_,i)=>i!==si)})} className="text-slate-400 hover:text-red-500"><X size={14}/></button>}
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <label className="block text-xs text-slate-500 mb-1">交通方式</label>
+                            <input type="text" className="w-full border border-blue-200 rounded-lg p-2 text-sm bg-slate-50 outline-none" placeholder="火車、巴士" value={seg.mode} onChange={e=>{const s=[...editingItem.transportSegments];s[si]={...s[si],mode:e.target.value};setEditingItem({...editingItem,transportSegments:s});}}/>
+                          </div>
+                          <div>
+                            <label className="block text-xs text-slate-500 mb-1">發車時間</label>
+                            <input type="time" className="w-full border border-blue-200 rounded-lg p-2 text-sm bg-white outline-none" value={seg.departure} onChange={e=>{const s=[...editingItem.transportSegments];s[si]={...s[si],departure:e.target.value};setEditingItem({...editingItem,transportSegments:s});}}/>
+                          </div>
+                          <div>
+                            <label className="block text-xs text-slate-500 mb-1">預估時間</label>
+                            <input type="text" className="w-full border border-blue-200 rounded-lg p-2 text-sm bg-white outline-none" placeholder="30分鐘" value={seg.duration} onChange={e=>{const s=[...editingItem.transportSegments];s[si]={...s[si],duration:e.target.value};setEditingItem({...editingItem,transportSegments:s});}}/>
+                          </div>
+                          <div>
+                            <label className="block text-xs text-slate-500 mb-1">票價</label>
+                            <input type="text" className="w-full border border-blue-200 rounded-lg p-2 text-sm bg-white outline-none" placeholder="3600" value={seg.price} onChange={e=>{const s=[...editingItem.transportSegments];s[si]={...s[si],price:e.target.value};setEditingItem({...editingItem,transportSegments:s});}}/>
+                          </div>
+                        </div>
+                        <div>
+                          <label className="block text-xs text-slate-500 mb-1">購票連結</label>
+                          <input type="url" className="w-full border border-blue-200 rounded-lg p-2 text-sm bg-white outline-none" placeholder="https://" value={seg.url} onChange={e=>{const s=[...editingItem.transportSegments];s[si]={...s[si],url:e.target.value};setEditingItem({...editingItem,transportSegments:s});}}/>
+                        </div>
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input type="checkbox" checked={seg.needTicket} onChange={e=>{
+                            const s=[...editingItem.transportSegments];s[si]={...s[si],needTicket:e.target.checked};setEditingItem({...editingItem,transportSegments:s});
+                            if(e.target.checked){const text=`購票：${editingItem.title||seg.mode||'交通'}（第${si+1}段）`;if(!checklist.some(c=>c.text===text))setChecklist(prev=>[...prev,{id:crypto.randomUUID(),text,checked:false}]);}
+                          }} className="w-4 h-4 rounded accent-indigo-600"/>
+                          <span className="text-xs font-bold text-blue-700">需提前購票 → 自動加行前清單</span>
+                        </label>
+                      </div>
+                    ))}
+                    {(!editingItem.transportSegments || editingItem.transportSegments.length === 0) && (
+                      <button onClick={()=>setEditingItem({...editingItem,transportSegments:[emptySegment()]})} className="w-full py-2 text-sm text-indigo-600 font-bold border border-dashed border-indigo-300 rounded-lg hover:bg-indigo-50">
+                        + 填入第一段交通細節
+                      </button>
+                    )}
+                  </div>
+
+                  {/* 營業時間 */}
+                  <div>
+                    <label className="block text-xs font-bold text-slate-500 mb-1">營業時間</label>
+                    <input type="text" className="w-full border rounded-lg p-2 text-sm bg-slate-50 focus:ring-2 focus:ring-indigo-300 outline-none" placeholder="如：10:00-22:00" value={editingItem.hours||''} onChange={e=>setEditingItem({...editingItem,hours:e.target.value})}/>
+                  </div>
+
+                  {/* 官方網站 */}
+                  <div>
+                    <label className="block text-xs font-bold text-slate-500 mb-1">官方網站</label>
+                    <input type="url" className="w-full border rounded-lg p-2 text-sm bg-slate-50 focus:ring-2 focus:ring-indigo-300 outline-none" placeholder="https://" value={editingItem.website||''} onChange={e=>setEditingItem({...editingItem,website:e.target.value})}/>
+                  </div>
+
+                  {/* 購物清單 */}
+                  <div className="p-3 bg-slate-100 rounded-xl space-y-3">
+                    <label className="block text-xs font-bold text-slate-700 flex items-center gap-1"><ShoppingBag size={14}/>購物清單</label>
+                    {(editingItem.shoppingList||[]).map(s=>(
+                      <div key={s.id} className="flex justify-between items-center bg-white border p-2 rounded-lg text-sm"><span className="truncate flex-1">{s.text}</span><button onClick={()=>delModalShop(s.id)} className="text-slate-400 hover:text-red-500 p-1"><X size={14}/></button></div>
+                    ))}
+                    {!(editingItem.shoppingList?.length>0)&&<div className="text-xs text-slate-400 py-1">目前無項目</div>}
+                    <div className="flex gap-2">
+                      <input type="text" className="flex-1 border rounded-lg px-2 py-1.5 text-sm outline-none focus:border-indigo-400" placeholder="要買什麼..." value={modalNewShop} onChange={e=>setModalNewShop(e.target.value)} onKeyDown={e=>e.key==='Enter'&&addModalShop()}/>
+                      <button onClick={addModalShop} className="bg-indigo-600 text-white px-3 py-1.5 rounded-lg text-sm font-bold">新增</button>
+                    </div>
+                  </div>
+
+                  {/* 門票 */}
+                  <div>
+                    <label className="block text-xs font-bold text-slate-500 mb-1">門票資訊</label>
+                    <input type="text" className="w-full border rounded-lg p-2 text-sm bg-slate-50 focus:ring-2 focus:ring-indigo-300 outline-none" placeholder="票價或購票狀況" value={editingItem.tickets||''} onChange={e=>setEditingItem({...editingItem,tickets:e.target.value})}/>
+                  </div>
+
+                </div>
+              )}
+
+              <div className="pt-2 pb-4">
+                <button onClick={()=>saveItineraryItem(editingItem)} disabled={!editingItem.title?.trim()} className="w-full py-3 bg-indigo-600 text-white font-bold rounded-xl shadow-md hover:bg-indigo-700 disabled:opacity-40">儲存行程</button>
               </div>
             </div>
           </div>
