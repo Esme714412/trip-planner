@@ -8,7 +8,7 @@ import {
   ListTodo, ToggleLeft, ToggleRight, Calendar,
   Settings, Lock, Unlock, Tag, Save, Star, Plane, Luggage,
   Camera as CameraIcon, ArrowLeft, ArrowRight,
-  Share2, ChevronUpIcon, WifiOff, Zap, MoveRight,
+  Share2, ChevronUpIcon, WifiOff, Zap, MoveRight, Hotel,
 } from 'lucide-react';
 import ExpenseFormModal from './ExpenseFormModal';
 import { useConfirm } from './ConfirmModal';
@@ -190,6 +190,11 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
   const [itinerary,     setItinerary]     = useState(initialData.itinerary     || []);
   const [expenses,      setExpenses]      = useState(initialData.expenses      || []);
   const [flexTodos,     setFlexTodos]     = useState(initialData.flexTodos     || []);
+  const [accommodations, setAccommodations] = useState(initialData.accommodations || []); // [{date, name, location}]
+  const [showAddAccom,  setShowAddAccom]  = useState(false);
+  const [newAccomDate,  setNewAccomDate]  = useState('');
+  const [newAccomName,  setNewAccomName]  = useState('');
+  const [newAccomLoc,   setNewAccomLoc]   = useState('');
 
   // ── UI state ──────────────────────────────────────────────────────────────
   const [mode,             setMode]             = useState('checklist');
@@ -254,8 +259,6 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
   const [isMarkdownImportOpen, setIsMarkdownImportOpen] = useState(false);
   const [markdownText,         setMarkdownText]         = useState('');
   const [markdownStatus,       setMarkdownStatus]       = useState('');
-  const checklistRef = useRef(null);
-  const [checklistScrollRatio, setChecklistScrollRatio] = useState(0);
 
   // 點選移動排序（取代拖曳）
   const [movingId, setMovingId] = useState(null); // 正在移動中的景點 id
@@ -264,18 +267,6 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
   const TripIcon = TRIP_ICONS[tripIconIndex % TRIP_ICONS.length];
 
   useEffect(() => { if (isEditingName) tripNameRef.current?.focus(); }, [isEditingName]);
-
-  // 清單捲動位置追蹤
-  useEffect(() => {
-    const el = checklistRef.current;
-    if (!el) return;
-    const handler = () => {
-      const ratio = el.scrollTop / (el.scrollHeight - el.clientHeight || 1);
-      setChecklistScrollRatio(Math.min(1, Math.max(0, ratio)));
-    };
-    el.addEventListener('scroll', handler);
-    return () => el.removeEventListener('scroll', handler);
-  }, [mode, listTab]);
 
   // ── 載入共享成員 email（重新進入後不顯示 UID）─────────────────────────────
   useEffect(() => {
@@ -298,8 +289,8 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
   const payload = useMemo(() => ({
     name: tripName, iconIndex: tripIconIndex,
     tripStartDate, tripEndDate,
-    users, rates, baseCurrency, categories, checklist, itinerary, expenses, flexTodos,
-  }), [tripName, tripIconIndex, tripStartDate, tripEndDate, users, rates, baseCurrency, categories, checklist, itinerary, expenses, flexTodos]);
+    users, rates, baseCurrency, categories, checklist, itinerary, expenses, flexTodos, accommodations,
+  }), [tripName, tripIconIndex, tripStartDate, tripEndDate, users, rates, baseCurrency, categories, checklist, itinerary, expenses, flexTodos, accommodations]);
 
   const debouncedPayload = useDebounce(payload, 1200);
   const isFirstSave = useRef(true);
@@ -508,13 +499,22 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
     let total=0;
     const userStats=users.reduce((acc,u)=>({...acc,[u]:{paid:0,consumed:0}}),{});
     convertedExpenses.forEach(exp=>{
-      total+=exp.baseAmount;
-      if(userStats[exp.paidBy])userStats[exp.paidBy].paid+=exp.baseAmount;
-      if(exp.splitMode==='custom'&&exp.customSplit){
-        Object.entries(exp.customSplit).forEach(([u,amt])=>{if(userStats[u])userStats[u].consumed+=Number(amt)*exp.rateUsed;});
+      if(exp.splitMode==='aa'){
+        // AA 制：每人各付 amount，paid=consumed，不影響結算
+        const perPerson = exp.baseAmount; // amount 即為每人金額
+        (exp.aaSplitAmong||exp.splitAmong||[]).forEach(u=>{
+          if(userStats[u]){userStats[u].paid+=perPerson;userStats[u].consumed+=perPerson;}
+        });
+        total+=perPerson*(exp.aaSplitAmong||exp.splitAmong||[]).length;
       } else {
-        const cnt=exp.splitAmong?.length||0;
-        if(cnt>0){const pp=exp.baseAmount/cnt;(exp.splitAmong||[]).forEach(u=>{if(userStats[u])userStats[u].consumed+=pp;});}
+        total+=exp.baseAmount;
+        if(userStats[exp.paidBy])userStats[exp.paidBy].paid+=exp.baseAmount;
+        if(exp.splitMode==='custom'&&exp.customSplit){
+          Object.entries(exp.customSplit).forEach(([u,amt])=>{if(userStats[u])userStats[u].consumed+=Number(amt)*exp.rateUsed;});
+        } else {
+          const cnt=exp.splitAmong?.length||0;
+          if(cnt>0){const pp=exp.baseAmount/cnt;(exp.splitAmong||[]).forEach(u=>{if(userStats[u])userStats[u].consumed+=pp;});}
+        }
       }
     });
     return {total,userStats};
@@ -812,8 +812,7 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                     <button onClick={addChecklistItem} className="px-4 bg-indigo-600 text-white rounded-xl hover:bg-indigo-700"><Plus size={24}/></button>
                   </div>
                 )}
-                <div className="relative flex gap-1">
-                  <div ref={checklistRef} className="flex-1 space-y-2 overflow-y-auto max-h-[60vh] pr-1">
+                  <div className="flex-1 space-y-2 overflow-y-auto max-h-[60vh] pr-1">
                   {checklist.map(item=>(
                     <div key={item.id} className="flex items-center justify-between p-3 bg-white rounded-xl shadow-sm border border-slate-200">
                       <label className="flex items-center gap-3 flex-1 cursor-pointer">
@@ -828,18 +827,6 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                   ))}
                   {checklist.length===0&&<div className="text-center py-10 text-slate-400 flex flex-col items-center gap-2"><ListTodo size={48} className="opacity-20"/><p>目前沒有清單項目</p></div>}
                   </div>
-                  {/* 捲動位置指示器 */}
-                  {checklist.length > 6 && (
-                    <div className="w-1.5 flex flex-col items-center py-1 shrink-0">
-                      <div className="w-1 flex-1 bg-slate-100 rounded-full relative">
-                        <div
-                          className="w-1 bg-indigo-400 rounded-full absolute transition-all duration-100"
-                          style={{ height: '20%', top: `${checklistScrollRatio * 80}%` }}
-                        />
-                      </div>
-                    </div>
-                  )}
-                </div>
               </>
             )}
 
@@ -990,13 +977,38 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
 
             {(()=>{
               const byDate=itinerary.reduce((acc,i)=>{const d=i.date||'未定日期';(acc[d]=acc[d]||[]).push(i);return acc;},{});
-              return Object.keys(byDate).sort().map(dateStr=>(
+              const sortedDates = Object.keys(byDate).sort();
+              const firstDate = sortedDates[0];
+              const lastDate = sortedDates[sortedDates.length-1];
+              // 找到當天的住宿設定
+              const getAccom = (dateStr) => {
+                // 完全匹配優先，再找最近一筆
+                const exact = accommodations.find(a=>a.date===dateStr);
+                if(exact) return exact;
+                const before = accommodations.filter(a=>a.date<=dateStr).sort((a,b)=>b.date.localeCompare(a.date));
+                return before[0]||null;
+              };
+              return sortedDates.map(dateStr=>{
+                const accom = getAccom(dateStr);
+                const isFirst = dateStr===firstDate;
+                const isLast = dateStr===lastDate;
+                return (
                 <div id={`date-${dateStr}`} key={dateStr} className="scroll-mt-36 mb-8">
                   <div className="mb-5 flex items-center gap-3">
                     <h2 className="text-base font-bold text-indigo-800 bg-indigo-100 px-4 py-1.5 rounded-full shadow-sm border border-indigo-200">
                       {tripDayLabel(dateStr)}
                     </h2>
                     <div className="h-px bg-indigo-200 flex-1"/>
+                    {/* 住宿導航按鈕 — 第一天不顯示出發處，最後一天不顯示返回 */}
+                    {accom && !isFirst && (
+                      <a href={`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(accom.location||accom.name)}`}
+                        target="_blank" rel="noreferrer"
+                        className="shrink-0 flex items-center gap-1 text-xs px-2.5 py-1.5 bg-teal-50 text-teal-700 border border-teal-200 rounded-full hover:bg-teal-100 transition-colors"
+                        title={`導航回住宿：${accom.name}`}
+                      >
+                        <Hotel size={13}/>回住宿
+                      </a>
+                    )}
                   </div>
 
                   {isEditMode ? (
@@ -1147,7 +1159,8 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                     </div>
                   )}
                 </div>
-              ));
+              );
+              })}
             })()}
 
             {/* 新增行程景點（唯讀時隱藏） */}
@@ -1233,8 +1246,8 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                       </div>
                       <div className="text-xs mt-1 flex flex-wrap gap-2 items-center">
                         <span className="bg-indigo-50 text-indigo-600 px-1.5 py-0.5 rounded flex items-center gap-0.5"><Tag size={10}/>{exp.category||'其他'}</span>
-                        <span className="text-slate-500">付: {exp.paidBy}</span>
-                        <span className="text-slate-500">分: {exp.splitMode==='custom'?'自訂':(exp.splitAmong||[]).join(',')}</span>
+                        <span className="text-slate-500">付: {exp.splitMode==='aa'?'AA各付':(exp.paidBy||'')}</span>
+                        <span className="text-slate-500">分: {exp.splitMode==='custom'?'自訂':exp.splitMode==='aa'?`AA×${(exp.aaSplitAmong||exp.splitAmong||[]).length}`:(exp.splitAmong||[]).join(',')}</span>
                         {rel&&<span className="text-indigo-500 truncate">📍 {rel.title}</span>}
                       </div>
                     </div>
@@ -1371,6 +1384,64 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                   <input type="number" step="0.001" value={newRateValue} onChange={e=>setNewRateValue(e.target.value)} placeholder={`1 幣 = ? ${baseCurrency}`} className="flex-1 border border-slate-200 rounded-lg px-3 py-1.5 text-sm bg-white outline-none"/>
                   <button onClick={addRate} className="bg-slate-200 text-slate-700 px-3 py-1.5 rounded-lg text-sm font-bold hover:bg-slate-300">新增</button>
                 </div>
+              </div>
+
+              {/* 住宿設定 */}
+              <div className="space-y-3">
+                <div className="border-b pb-2">
+                  <h3 className="font-bold text-slate-700 flex items-center gap-1.5"><Hotel size={16} className="text-teal-500"/>住宿設定</h3>
+                </div>
+                <p className="text-xs text-slate-400">設定每晚住宿地點，行程計畫頁的日期標題旁會顯示「回住宿」導航按鈕。</p>
+                <div className="space-y-2">
+                  {accommodations.map((accom,idx)=>(
+                    <div key={idx} className="flex gap-2 items-center bg-teal-50 border border-teal-100 rounded-xl px-3 py-2">
+                      <Hotel size={14} className="text-teal-500 shrink-0"/>
+                      <div className="flex-1 min-w-0">
+                        <div className="text-xs text-teal-600 font-bold">{accom.date ? fmtDate(accom.date) : '未設定日期'} 起</div>
+                        <div className="text-sm font-medium text-slate-700 truncate">{accom.name}</div>
+                        {accom.location&&accom.location!==accom.name&&<div className="text-xs text-slate-400 truncate">{accom.location}</div>}
+                      </div>
+                      <button onClick={()=>setAccommodations(p=>p.filter((_,i)=>i!==idx))} className="text-slate-400 hover:text-red-500 shrink-0"><X size={16}/></button>
+                    </div>
+                  ))}
+                  {accommodations.length===0&&<div className="text-xs text-slate-400 py-1">尚未設定住宿</div>}
+                </div>
+                {/* 新增住宿 */}
+                {!showAddAccom ? (
+                  <button onClick={()=>setShowAddAccom(true)} className="w-full py-2 text-sm text-teal-600 font-bold border border-dashed border-teal-300 rounded-xl hover:bg-teal-50 flex items-center justify-center gap-1">
+                    <Plus size={14}/>新增住宿
+                  </button>
+                ) : (
+                  <div className="bg-white border border-teal-200 rounded-xl p-3 space-y-2">
+                    <div>
+                      <label className="text-xs font-bold text-slate-500 mb-1 block">適用起始日期</label>
+                      {tripDateRange.length>0?(
+                        <select className="w-full border rounded-lg p-2 text-sm bg-slate-50 outline-none" value={newAccomDate} onChange={e=>setNewAccomDate(e.target.value)}>
+                          <option value="">選擇日期...</option>
+                          {tripDateRange.map((d,i)=>{const dt=new Date(d);return<option key={d} value={d}>第{i+1}天 {dt.getMonth()+1}/{dt.getDate()}</option>;})}
+                        </select>
+                      ):(
+                        <input type="date" className="w-full border rounded-lg p-2 text-sm bg-slate-50" value={newAccomDate} onChange={e=>setNewAccomDate(e.target.value)}/>
+                      )}
+                    </div>
+                    <div>
+                      <label className="text-xs font-bold text-slate-500 mb-1 block">住宿名稱</label>
+                      <input type="text" placeholder="如：京都The b飯店" className="w-full border rounded-lg p-2 text-sm bg-slate-50 outline-none focus:ring-2 focus:ring-teal-300" value={newAccomName} onChange={e=>setNewAccomName(e.target.value)}/>
+                    </div>
+                    <div>
+                      <label className="text-xs font-bold text-slate-500 mb-1 block">地址（供導航用，留空則用名稱）</label>
+                      <input type="text" placeholder="可貼店家名稱或地址" className="w-full border rounded-lg p-2 text-sm bg-slate-50 outline-none focus:ring-2 focus:ring-teal-300" value={newAccomLoc} onChange={e=>setNewAccomLoc(e.target.value)}/>
+                    </div>
+                    <div className="flex gap-2 pt-1">
+                      <button onClick={()=>{setShowAddAccom(false);setNewAccomName('');setNewAccomLoc('');setNewAccomDate('');}} className="flex-1 py-2 text-sm text-slate-500 bg-slate-100 rounded-lg hover:bg-slate-200">取消</button>
+                      <button onClick={()=>{
+                        if(!newAccomName.trim())return;
+                        setAccommodations(p=>[...p,{date:newAccomDate,name:newAccomName.trim(),location:newAccomLoc.trim()||newAccomName.trim()}].sort((a,b)=>a.date.localeCompare(b.date)));
+                        setShowAddAccom(false);setNewAccomName('');setNewAccomLoc('');setNewAccomDate('');
+                      }} className="flex-1 py-2 text-sm text-white bg-teal-600 rounded-lg font-bold hover:bg-teal-700">新增</button>
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Markdown 匯入 */}

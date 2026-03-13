@@ -14,6 +14,8 @@ export default function ExpenseFormModal({ expenseItem, initialData, users, rate
   const [splitMode,   setSplitMode]   = useState(initialData?.splitMode   || 'equal');
   const [splitAmong,  setSplitAmong]  = useState(initialData?.splitAmong  || users);
   const [customSplit, setCustomSplit] = useState(initialData?.customSplit || users.reduce((acc, u) => ({ ...acc, [u]: '' }), {}));
+  // AA 制：每人各付金額（預設等分）
+  const [aaSplitAmong, setAaSplitAmong] = useState(initialData?.aaSplitAmong || users);
 
   const totalAmount = useMemo(() => items.reduce((sum, item) => sum + (parseFloat(item.price) || 0), 0), [items]);
 
@@ -56,6 +58,7 @@ export default function ExpenseFormModal({ expenseItem, initialData, users, rate
     }
     if (totalAmount <= 0) { alert('總金額必須大於 0'); return; }
     if (splitMode === 'equal' && splitAmong.length === 0) { alert('請至少選擇一位分攤人'); return; }
+    if (splitMode === 'aa' && aaSplitAmong.length === 0) { alert('請至少選擇一位'); return; }
 
     let finalCustom = customSplit;
     if (splitMode === 'custom') {
@@ -73,7 +76,10 @@ export default function ExpenseFormModal({ expenseItem, initialData, users, rate
       items: items.filter(i => i.name.trim() || i.price),
       currency, category,
       description: finalDesc,
-      paidBy, splitMode, splitAmong,
+      paidBy: splitMode === 'aa' ? 'AA' : paidBy,
+      splitMode,
+      splitAmong: splitMode === 'aa' ? aaSplitAmong : splitAmong,
+      aaSplitAmong: splitMode === 'aa' ? aaSplitAmong : undefined,
       customSplit: finalCustom,
     });
   };
@@ -130,25 +136,45 @@ export default function ExpenseFormModal({ expenseItem, initialData, users, rate
 
           {/* Split */}
           <div className="p-4 border rounded-xl space-y-5 shadow-sm">
-            <div>
-              <label className="block text-sm font-bold text-slate-700 mb-2 flex items-center gap-2"><CreditCard size={16}/> 誰先代墊？</label>
-              <div className="flex flex-wrap gap-2">
-                {users.map(u => (
-                  <button type="button" key={u} onClick={() => setPaidBy(u)} className={`px-4 py-2 rounded-lg border text-sm font-medium transition-colors ${paidBy === u ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-100'}`}>{u}</button>
-                ))}
+            {splitMode !== 'aa' && (
+              <div>
+                <label className="block text-sm font-bold text-slate-700 mb-2 flex items-center gap-2"><CreditCard size={16}/> 誰先代墊？</label>
+                <div className="flex flex-wrap gap-2">
+                  {users.map(u => (
+                    <button type="button" key={u} onClick={() => setPaidBy(u)} className={`px-4 py-2 rounded-lg border text-sm font-medium transition-colors ${paidBy === u ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-100'}`}>{u}</button>
+                  ))}
+                </div>
               </div>
-            </div>
+            )}
 
             <div>
               <div className="flex justify-between items-center mb-2">
                 <label className="block text-sm font-bold text-slate-700 flex items-center gap-2"><Users size={16}/> 分帳方式</label>
                 <div className="flex bg-slate-200 p-1 rounded-lg">
-                  <button type="button" onClick={() => setSplitMode('equal')}  className={`px-3 py-1 text-xs font-bold rounded-md transition-colors ${splitMode === 'equal'  ? 'bg-white shadow-sm text-slate-800' : 'text-slate-500'}`}>平分</button>
-                  <button type="button" onClick={() => setSplitMode('custom')} className={`px-3 py-1 text-xs font-bold rounded-md transition-colors ${splitMode === 'custom' ? 'bg-white shadow-sm text-slate-800' : 'text-slate-500'}`}>自訂金額</button>
+                  <button type="button" onClick={() => setSplitMode('equal')}  className={`px-2.5 py-1 text-xs font-bold rounded-md transition-colors ${splitMode === 'equal'  ? 'bg-white shadow-sm text-slate-800' : 'text-slate-500'}`}>平分</button>
+                  <button type="button" onClick={() => setSplitMode('aa')}     className={`px-2.5 py-1 text-xs font-bold rounded-md transition-colors ${splitMode === 'aa'     ? 'bg-white shadow-sm text-slate-800' : 'text-slate-500'}`}>AA制</button>
+                  <button type="button" onClick={() => setSplitMode('custom')} className={`px-2.5 py-1 text-xs font-bold rounded-md transition-colors ${splitMode === 'custom' ? 'bg-white shadow-sm text-slate-800' : 'text-slate-500'}`}>自訂</button>
                 </div>
               </div>
 
-              {splitMode === 'equal' ? (
+              {splitMode === 'aa' && (
+                <div className="space-y-2 mt-3">
+                  <p className="text-xs text-slate-400">各自付款，互不影響分帳結算。金額為每人各付金額，勾選有付這筆的人。</p>
+                  <div className="flex flex-wrap gap-2 mt-2">
+                    {users.map(u => (
+                      <button type="button" key={u} onClick={() => setAaSplitAmong(prev => prev.includes(u) ? prev.filter(x => x !== u) : [...prev, u])}
+                        className={`px-4 py-2 rounded-lg border text-sm font-medium flex items-center gap-1 transition-colors ${aaSplitAmong.includes(u) ? 'bg-emerald-100 text-emerald-800 border-emerald-300' : 'bg-white text-slate-500 border-slate-300'}`}>
+                        <Check size={14} className={aaSplitAmong.includes(u) ? 'opacity-100' : 'opacity-0'}/> {u}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="text-xs text-emerald-600 font-bold mt-1">
+                    共 {aaSplitAmong.length} 人 × {totalAmount} {currency} = 總計 {(totalAmount * aaSplitAmong.length).toLocaleString()} {currency}
+                  </p>
+                </div>
+              )}
+
+              {splitMode === 'equal' && (
                 <div className="flex flex-wrap gap-2 mt-3">
                   {users.map(u => (
                     <button type="button" key={u} onClick={() => setSplitAmong(prev => prev.includes(u) ? prev.filter(x => x !== u) : [...prev, u])}
@@ -157,7 +183,9 @@ export default function ExpenseFormModal({ expenseItem, initialData, users, rate
                     </button>
                   ))}
                 </div>
-              ) : (
+              )}
+
+              {splitMode === 'custom' && (
                 <div className="space-y-2 mt-3 bg-white p-3 rounded-lg border border-slate-200">
                   <p className="text-xs text-slate-400 mb-2">輸入 0 表示不分攤；留白自動均分剩餘金額。</p>
                   {users.map(u => {
