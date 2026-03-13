@@ -1160,7 +1160,7 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                   )}
                 </div>
               );
-              })}
+              })
             })()}
 
             {/* 新增行程景點（唯讀時隱藏） */}

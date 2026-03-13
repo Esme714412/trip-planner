@@ -47,7 +47,7 @@ GitHub Actions 部署時需在 repo Settings → Secrets and variables → Actio
 
 ## 版本紀錄
 
-## v0.6 (2026-03-XX)
+## v0.6 - 2026-03-14
 
 ### 新功能
 - **AA 制記帳**：記帳分帳方式新增「AA制」選項，設定每人各付金額並勾選有付款的成員，各自獨立計算不影響代墊結算
