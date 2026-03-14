@@ -1,13 +1,14 @@
 import { useState, useMemo, useEffect } from 'react';
 import { X, Trash2, Plus, CreditCard, Users, ListTodo, Check } from 'lucide-react';
 
-export default function ExpenseFormModal({ expenseItem, initialData, users, rates, categories, onSave, onClose }) {
+export default function ExpenseFormModal({ expenseItem, initialData, users, rates, baseCurrency, categories, onSave, onClose }) {
+  const prefill = expenseItem?._prefill || {};
   const [items, setItems] = useState(
-    initialData?.items || [{ id: Date.now().toString(), name: initialData?.description || '', price: initialData?.amount || '' }]
+    initialData?.items || [{ id: Date.now().toString(), name: prefill.description || initialData?.description || '', price: prefill.amount || initialData?.amount || '' }]
   );
-  const [currency,    setCurrency]    = useState(initialData?.currency    || Object.keys(rates)[0] || 'TWD');
+  const [currency,    setCurrency]    = useState(initialData?.currency    || prefill.currency || baseCurrency || Object.keys(rates)[0] || 'TWD');
   const [category,    setCategory]    = useState(initialData?.category    || categories[0] || '其他');
-  const [description, setDescription] = useState(initialData?.description || '');
+  const [description, setDescription] = useState(initialData?.description || prefill.description || '');
   const [paidBy,      setPaidBy]      = useState(
     initialData?.paidBy && users.includes(initialData.paidBy) ? initialData.paidBy : users[0] || ''
   );
@@ -193,19 +194,19 @@ export default function ExpenseFormModal({ expenseItem, initialData, users, rate
                     return (
                       <div key={u} className="flex items-center gap-3">
                         <span className="text-sm font-medium text-slate-700 w-16 truncate">{u}</span>
-                        <div className="flex-1 relative">
-                          <input type="number" step="0.01" placeholder="自動平分"
+                        <div className="flex-1 flex items-center gap-2">
+                          <input type="number" step="1"
                             value={customSplit[u] ?? ''}
                             onChange={e => setCustomSplit(prev => ({ ...prev, [u]: e.target.value }))}
-                            className={`w-full border-b p-1 text-right outline-none font-medium focus:border-indigo-500 ${isBlank ? 'border-dashed border-slate-300 text-slate-400 bg-slate-50/50' : 'border-slate-300 text-slate-800'}`}
+                            className={`flex-1 border-b p-1 text-right outline-none font-medium focus:border-indigo-500 ${isBlank ? 'border-dashed border-slate-300' : 'border-slate-300 text-slate-800'}`}
                           />
-                          {isBlank && <div className="absolute right-1 top-1.5 pointer-events-none text-slate-400 text-sm">{smartCalc.perUnspecified.toFixed(2)}</div>}
+                          {isBlank && <span className="text-slate-400 text-sm shrink-0 w-12 text-right">{Math.round(smartCalc.perUnspecified)}</span>}
                         </div>
                       </div>
                     );
                   })}
-                  {smartCalc.unspecifiedUsers.length === 0 && Math.abs(smartCalc.specifiedTotal - totalAmount) > 0.01 && (
-                    <p className="text-xs text-red-500 font-bold text-right">警告: 自訂總和 ({smartCalc.specifiedTotal}) ≠ 總金額 ({totalAmount})</p>
+                  {smartCalc.unspecifiedUsers.length === 0 && Math.abs(smartCalc.specifiedTotal - totalAmount) > 0.5 && (
+                    <p className="text-xs text-red-500 font-bold text-right">⚠️ 自訂總和 ({Math.round(smartCalc.specifiedTotal)}) ≠ 總金額 ({Math.round(totalAmount)})</p>
                   )}
                 </div>
               )}

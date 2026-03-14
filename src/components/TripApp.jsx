@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { doc, updateDoc, serverTimestamp, setDoc, getDocs, getDoc, collection, query, where } from 'firebase/firestore';
+import { doc, updateDoc, serverTimestamp, setDoc, getDocs, getDoc, collection, query, where, onSnapshot } from 'firebase/firestore';
 import { db } from '../firebase/config';
 import {
   MapPin, Clock, Globe, ShoppingBag, Ticket, Navigation,
@@ -208,6 +208,9 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
   const [editingExpense,   setEditingExpense]   = useState(null);
   const [isEditingName,    setIsEditingName]    = useState(false);
   const [saveStatus,       setSaveStatus]       = useState('saved');
+  const [toast,            setToast]            = useState(''); // 輕量提示
+
+  const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(''), 2000); };
   const [isEditingDates,   setIsEditingDates]   = useState(false);
   const [flexCollapsed,    setFlexCollapsed]    = useState(false);
   const [expandedTransport,setExpandedTransport] = useState(new Set()); // 展開交通詳情的景點 id
@@ -304,6 +307,18 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
       .catch(() => setSaveStatus('error'));
   }, [debouncedPayload, uid, tripId, readOnly]);
 
+  // ① expenses 即時同步（onSnapshot）
+  const isLocalExpenseUpdate = useRef(false);
+  useEffect(() => {
+    const unsub = onSnapshot(doc(db, 'users', uid, 'trips', tripId), (snap) => {
+      if (!snap.exists()) return;
+      if (isLocalExpenseUpdate.current) { isLocalExpenseUpdate.current = false; return; }
+      const remoteExpenses = snap.data().expenses;
+      if (remoteExpenses) setExpenses(remoteExpenses);
+    });
+    return () => unsub();
+  }, [uid, tripId]);
+
   // ── Date helpers ──────────────────────────────────────────────────────────
   const fmtDate = (dateStr) => {
     if (!dateStr) return '未定日期';
@@ -324,7 +339,7 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
     const target = new Date(dateStr);
     const dayN = Math.round((target - start) / (1000*60*60*24)) + 1;
     if (dayN < 1) return fmtDate(dateStr);
-    return `第 ${dayN} 天（${fmtDate(dateStr)}）`;
+    return `第 ${dayN} 天\u3000${fmtDate(dateStr)}`;
   };
 
   // 行程日期列表（用於 Day selector）
@@ -478,13 +493,19 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
 
   // ── Expenses ───────────────────────────────────────────────────────────────
   const saveExpense = (exp) => {
+    isLocalExpenseUpdate.current = true;
     if (exp.id) setExpenses(expenses.map(e=>e.id===exp.id?exp:e));
     else        setExpenses([...expenses,{...exp,id:crypto.randomUUID()}]);
     setAddingExpenseFor(null);
     setEditingExpense(null);
+    showToast(exp.id ? '✅ 已更新帳務' : '✅ 已記帳');
   };
   const deleteExpense = async (id) => {
-    if (await confirm('確定刪除此筆紀錄？','確認刪除')) setExpenses(expenses.filter(e=>e.id!==id));
+    if (await confirm('確定刪除此筆紀錄？','確認刪除')){
+      isLocalExpenseUpdate.current = true;
+      setExpenses(expenses.filter(e=>e.id!==id));
+      showToast('🗑 已刪除');
+    }
   };
 
   // ── Finance calculations ───────────────────────────────────────────────────
@@ -1140,7 +1161,21 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                                     <div className="mt-2 ml-2 space-y-2">
                                       {segments.map((seg,si)=>(
                                         <div key={seg.id} className="bg-white border border-slate-200 rounded-xl p-3 text-xs space-y-1">
-                                          <div className="font-bold text-slate-700 flex items-center gap-1"><MoveRight size={12} className="text-indigo-400"/>第{si+1}段：{seg.mode||'未填'}</div>
+                                          <div className="font-bold text-slate-700 flex items-center gap-1 justify-between">
+                                            <span className="flex items-center gap-1"><MoveRight size={12} className="text-indigo-400"/>第{si+1}段：{seg.mode||'未填'}</span>
+                                            {!readOnly && seg.price && (
+                                              <button
+                                                onClick={()=>setAddingExpenseFor({
+                                                  id: item.id,
+                                                  title: `${item.title} 交通（${seg.mode||''}）`,
+                                                  _prefill: { description: `${seg.mode||'交通'}`, amount: parseFloat(seg.price)||0, currency: baseCurrency }
+                                                })}
+                                                className="flex items-center gap-1 text-xs text-emerald-600 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full hover:bg-emerald-100"
+                                              >
+                                                <DollarSign size={11}/>記帳
+                                              </button>
+                                            )}
+                                          </div>
                                           {seg.departure&&<div className="text-slate-500 flex gap-3"><span>🕐 發車 {seg.departure}</span></div>}
                                           {seg.duration&&<div className="text-slate-500">⏱ 預估 {seg.duration}</div>}
                                           {seg.price&&<div className="text-slate-500">💴 {seg.price}</div>}
@@ -1262,6 +1297,13 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
           </div>
         )}
       </div>
+
+      {/* ── Toast ── */}
+      {toast && (
+        <div className="fixed bottom-20 left-1/2 -translate-x-1/2 z-50 bg-slate-800 text-white text-sm font-medium px-4 py-2 rounded-full shadow-lg animate-fade-in pointer-events-none">
+          {toast}
+        </div>
+      )}
 
       {/* ── 回到頂部按鈕 ── */}
       {showScrollTop && (
@@ -1458,6 +1500,11 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                     📄 下載範例
                   </button>
                 </div>
+              </div>
+
+              {/* 版本資訊 */}
+              <div className="text-center pt-2 pb-1">
+                <span className="text-xs text-slate-300 font-mono">v0.6.1</span>
               </div>
             </div>
           </div>
@@ -1697,8 +1744,8 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
       )}
 
       {/* Expense Modals */}
-      {addingExpenseFor&&<ExpenseFormModal expenseItem={addingExpenseFor} users={users} rates={rates} categories={categories} onSave={saveExpense} onClose={()=>setAddingExpenseFor(null)}/>}
-      {editingExpense&&<ExpenseFormModal key={`edit-${editingExpense.id}`} initialData={editingExpense} expenseItem={itinerary.find(i=>i.id===editingExpense.itineraryId)||{title:'一般花費'}} users={users} rates={rates} categories={categories} onSave={saveExpense} onClose={()=>setEditingExpense(null)}/>}
+      {addingExpenseFor&&<ExpenseFormModal expenseItem={addingExpenseFor} users={users} rates={rates} baseCurrency={baseCurrency} categories={categories} onSave={saveExpense} onClose={()=>setAddingExpenseFor(null)}/>}
+      {editingExpense&&<ExpenseFormModal key={`edit-${editingExpense.id}`} initialData={editingExpense} expenseItem={itinerary.find(i=>i.id===editingExpense.itineraryId)||{title:'一般花費'}} users={users} rates={rates} baseCurrency={baseCurrency} categories={categories} onSave={saveExpense} onClose={()=>setEditingExpense(null)}/>}
     </div>
   );
 }
