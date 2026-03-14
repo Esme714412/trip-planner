@@ -173,6 +173,19 @@ function emptySegment() {
   return { id: crypto.randomUUID(), mode:'', departure:'', duration:'', price:'', url:'', needTicket:false };
 }
 
+// Firestore 不接受 undefined，遞迴清除
+function cleanForFirestore(obj) {
+  if (Array.isArray(obj)) return obj.map(cleanForFirestore);
+  if (obj !== null && typeof obj === 'object') {
+    return Object.fromEntries(
+      Object.entries(obj)
+        .filter(([, v]) => v !== undefined)
+        .map(([k, v]) => [k, cleanForFirestore(v)])
+    );
+  }
+  return obj;
+}
+
 export default function TripApp({ uid, currentUserUid, currentUserName, tripId, initialData, readOnly = false, onBack }) {
   const { confirm, ConfirmUI } = useConfirm();
   const isOwner = uid === currentUserUid;
@@ -203,6 +216,8 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
   const [expandedItems,    setExpandedItems]    = useState(new Set());
   const [isSettingsOpen,   setIsSettingsOpen]   = useState(false);
   const [isEditModalOpen,  setIsEditModalOpen]  = useState(false);
+  const [showDoneTickets,  setShowDoneTickets]  = useState(false);
+  const [showDoneRegular,  setShowDoneRegular]  = useState(false);
   const [editingItem,      setEditingItem]      = useState(null);
   const [addingExpenseFor, setAddingExpenseFor] = useState(null);
   const [editingExpense,   setEditingExpense]   = useState(null);
@@ -302,17 +317,18 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
     if (isFirstSave.current) { isFirstSave.current = false; return; }
     if (readOnly) return;
     setSaveStatus('saving');
-    updateDoc(doc(db, 'users', uid, 'trips', tripId), { ...debouncedPayload, updatedAt: serverTimestamp() })
+    updateDoc(doc(db, 'users', uid, 'trips', tripId), cleanForFirestore({ ...debouncedPayload, updatedAt: serverTimestamp() }))
       .then(() => setSaveStatus('saved'))
       .catch(() => setSaveStatus('error'));
   }, [debouncedPayload, uid, tripId, readOnly]);
 
-  // ① expenses 即時同步（onSnapshot）
-  const isLocalExpenseUpdate = useRef(false);
+  // ① expenses 即時同步（onSnapshot）—— 用時間戳避免自己的寫入觸發重複更新
+  const lastLocalSaveTime = useRef(0);
   useEffect(() => {
     const unsub = onSnapshot(doc(db, 'users', uid, 'trips', tripId), (snap) => {
       if (!snap.exists()) return;
-      if (isLocalExpenseUpdate.current) { isLocalExpenseUpdate.current = false; return; }
+      // debounce 1200ms + 緩衝 = 3000ms 內的更新視為自己的寫入，跳過
+      if (Date.now() - lastLocalSaveTime.current < 3000) return;
       const remoteExpenses = snap.data().expenses;
       if (remoteExpenses) setExpenses(remoteExpenses);
     });
@@ -493,16 +509,17 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
 
   // ── Expenses ───────────────────────────────────────────────────────────────
   const saveExpense = (exp) => {
-    isLocalExpenseUpdate.current = true;
-    if (exp.id) setExpenses(expenses.map(e=>e.id===exp.id?exp:e));
-    else        setExpenses([...expenses,{...exp,id:crypto.randomUUID()}]);
+    lastLocalSaveTime.current = Date.now();
+    const clean = cleanForFirestore(exp);
+    if (clean.id) setExpenses(expenses.map(e=>e.id===clean.id?clean:e));
+    else          setExpenses([...expenses,{...clean,id:crypto.randomUUID()}]);
     setAddingExpenseFor(null);
     setEditingExpense(null);
-    showToast(exp.id ? '✅ 已更新帳務' : '✅ 已記帳');
+    showToast(clean.id ? '✅ 已更新帳務' : '✅ 已記帳');
   };
   const deleteExpense = async (id) => {
     if (await confirm('確定刪除此筆紀錄？','確認刪除')){
-      isLocalExpenseUpdate.current = true;
+      lastLocalSaveTime.current = Date.now();
       setExpenses(expenses.filter(e=>e.id!==id));
       showToast('🗑 已刪除');
     }
@@ -692,7 +709,7 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
       )}
 
       {/* ── Header ── */}
-      <div className="sticky top-0 z-20 bg-white shadow-sm">
+      <div className="sticky top-0 z-20 bg-white shadow-sm" ref={el => { if(el) document.documentElement.style.setProperty('--header-h', el.offsetHeight+'px'); }}>
         <div className="p-4 flex items-center gap-3">
           <button onClick={onBack} className="p-2 text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 rounded-full transition-colors shrink-0">
             <ArrowLeft size={22}/>
@@ -807,38 +824,45 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
 
         {/* ══ CHECKLIST ══ */}
         {mode==='checklist' && (
-          <div className="space-y-4">
-            <div className="flex bg-slate-200 p-1 rounded-xl mb-4">
-              <button onClick={()=>setListTab('pretrip')}  className={`flex-1 py-2 text-sm font-bold rounded-lg transition-colors ${listTab==='pretrip'?'bg-white shadow-sm text-indigo-600':'text-slate-500'}`}>行前清單</button>
-              <button onClick={()=>setListTab('shopping')} className={`flex-1 py-2 text-sm font-bold rounded-lg transition-colors ${listTab==='shopping'?'bg-white shadow-sm text-indigo-600':'text-slate-500'}`}>各景點購物總覽</button>
+          <div>
+            {/* 橘色範圍：tab + 進度 + 新增輸入 — sticky 固定 */}
+            <div className="sticky z-10 bg-slate-50 pb-3 pt-1" style={{top:'var(--header-h,112px)'}}>
+              <div className="flex bg-slate-200 p-1 rounded-xl mb-3">
+                <button onClick={()=>setListTab('pretrip')}  className={`flex-1 py-2 text-sm font-bold rounded-lg transition-colors ${listTab==='pretrip'?'bg-white shadow-sm text-indigo-600':'text-slate-500'}`}>行前清單</button>
+                <button onClick={()=>setListTab('shopping')} className={`flex-1 py-2 text-sm font-bold rounded-lg transition-colors ${listTab==='shopping'?'bg-white shadow-sm text-indigo-600':'text-slate-500'}`}>各景點購物總覽</button>
+              </div>
+
+              {listTab==='pretrip' && (
+                <>
+                  {checklist.length>0 && (
+                    <div className="bg-white p-3 rounded-xl shadow-sm border border-slate-100 mb-3">
+                      <div className="flex justify-between text-xs font-bold text-slate-500 mb-2">
+                        <span>準備進度</span>
+                        <span>{checklist.filter(i=>i.checked).length} / {checklist.length} ({Math.round(checklist.filter(i=>i.checked).length/checklist.length*100)}%)</span>
+                      </div>
+                      <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
+                        <div className="h-full bg-indigo-500 transition-all duration-500" style={{width:`${checklist.filter(i=>i.checked).length/checklist.length*100}%`}}/>
+                      </div>
+                      {checklist.filter(i=>i.type==='ticket'&&!i.checked).length > 0 && (
+                        <div className="text-xs text-amber-600 font-bold mt-1.5 flex items-center gap-1">
+                          <Ticket size={12}/>尚有 {checklist.filter(i=>i.type==='ticket'&&!i.checked).length} 張票未購
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  {!readOnly && (
+                    <div className="flex gap-2">
+                      <input type="text" className="flex-1 border rounded-xl p-3 bg-white shadow-sm focus:ring-2 focus:ring-indigo-500 outline-none" placeholder="新增清單項目..." value={newChecklistItem} onChange={e=>setNewChecklistItem(e.target.value)} onKeyDown={e=>e.key==='Enter'&&addChecklistItem()}/>
+                      <button onClick={addChecklistItem} className="px-4 bg-indigo-600 text-white rounded-xl hover:bg-indigo-700"><Plus size={24}/></button>
+                    </div>
+                  )}
+                </>
+              )}
             </div>
 
             {listTab==='pretrip' && (
               <>
-                {checklist.length>0 && (
-                  <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-100 mb-4">
-                    <div className="flex justify-between text-xs font-bold text-slate-500 mb-2">
-                      <span>準備進度</span>
-                      <span>{checklist.filter(i=>i.checked).length} / {checklist.length} ({Math.round(checklist.filter(i=>i.checked).length/checklist.length*100)}%)</span>
-                    </div>
-                    <div className="h-2.5 bg-slate-100 rounded-full overflow-hidden">
-                      <div className="h-full bg-indigo-500 transition-all duration-500" style={{width:`${checklist.filter(i=>i.checked).length/checklist.length*100}%`}}/>
-                    </div>
-                    {checklist.filter(i=>i.type==='ticket'&&!i.checked).length > 0 && (
-                      <div className="text-xs text-amber-600 font-bold mt-2 flex items-center gap-1">
-                        <Ticket size={12}/>尚有 {checklist.filter(i=>i.type==='ticket'&&!i.checked).length} 張票未購
-                      </div>
-                    )}
-                  </div>
-                )}
-                {/* 新增清單（唯讀時隱藏） */}
-                {!readOnly && (
-                  <div className="flex gap-2 mb-6">
-                    <input type="text" className="flex-1 border rounded-xl p-3 bg-white shadow-sm focus:ring-2 focus:ring-indigo-500 outline-none" placeholder="新增清單項目..." value={newChecklistItem} onChange={e=>setNewChecklistItem(e.target.value)} onKeyDown={e=>e.key==='Enter'&&addChecklistItem()}/>
-                    <button onClick={addChecklistItem} className="px-4 bg-indigo-600 text-white rounded-xl hover:bg-indigo-700"><Plus size={24}/></button>
-                  </div>
-                )}
-                  <div className="flex-1 space-y-2 overflow-y-auto max-h-[60vh] pr-1">
+                <div className="space-y-2 pb-4">
                   {(()=>{
                     const today = new Date(); today.setHours(0,0,0,0);
                     const ticketItems   = checklist.filter(i=>i.type==='ticket');
@@ -848,11 +872,11 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                     const regPending    = regularItems.filter(i=>!i.checked);
                     const regDone       = regularItems.filter(i=>i.checked);
 
-                    const DeadlineBadge = ({item}) => {
+                    const DeadlineBadge = (item) => {
                       if(!item.ticketDeadline) return null;
                       const dl = new Date(item.ticketDeadline); dl.setHours(0,0,0,0);
                       const diff = Math.round((dl-today)/(1000*60*60*24));
-                      if(diff < 0) return <span className="text-xs font-bold text-red-600 bg-red-50 px-2 py-0.5 rounded-full shrink-0">已逾期</span>;
+                      if(diff < 0)   return <span className="text-xs font-bold text-red-600 bg-red-50 px-2 py-0.5 rounded-full shrink-0">已逾期</span>;
                       if(diff <= 30) return <span className="text-xs font-bold text-red-500 bg-red-50 px-2 py-0.5 rounded-full shrink-0">截止 {item.ticketDeadline.slice(5).replace('-','/')}（{diff}天）</span>;
                       return <span className="text-xs text-slate-400 bg-slate-50 px-2 py-0.5 rounded-full shrink-0">截止 {item.ticketDeadline.slice(5).replace('-','/')}</span>;
                     };
@@ -871,37 +895,39 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                               <div key={item.id} className="flex items-center justify-between p-3 bg-amber-50 rounded-xl border border-amber-200">
                                 <label className="flex items-center gap-3 flex-1 min-w-0 cursor-pointer">
                                   <input type="checkbox" className="hidden" checked={item.checked} onChange={()=>toggleChecklist(item.id)}/>
-                                  <div className="w-6 h-6 rounded-full border-2 border-amber-400 flex items-center justify-center shrink-0 transition-colors">
+                                  <div className="w-6 h-6 rounded-full border-2 border-amber-400 flex items-center justify-center shrink-0">
                                     <Ticket size={12} className="text-amber-400"/>
                                   </div>
                                   <span className="text-slate-700 text-sm truncate">{item.text}</span>
                                 </label>
                                 <div className="flex items-center gap-2 ml-2 shrink-0">
-                                  <DeadlineBadge item={item}/>
+                                  {DeadlineBadge(item)}
                                   {!readOnly && <button onClick={()=>deleteChecklistItem(item.id)} className="p-1.5 text-slate-400 hover:text-red-500"><Trash2 size={16}/></button>}
                                 </div>
                               </div>
                             ))}
                             {ticketDone.length > 0 && (
-                              <details className="group">
-                                <summary className="text-xs text-slate-400 cursor-pointer select-none list-none flex items-center gap-1 py-1">
-                                  <ChevronDown size={13} className="group-open:rotate-180 transition-transform"/> 已完成購票 ({ticketDone.length})
-                                </summary>
-                                <div className="space-y-2 mt-1">
-                                  {ticketDone.map(item=>(
-                                    <div key={item.id} className="flex items-center justify-between p-3 bg-white rounded-xl border border-slate-100 opacity-60">
-                                      <label className="flex items-center gap-3 flex-1 cursor-pointer">
-                                        <input type="checkbox" className="hidden" checked={item.checked} onChange={()=>toggleChecklist(item.id)}/>
-                                        <div className="w-6 h-6 rounded-full bg-emerald-500 border-2 border-emerald-500 flex items-center justify-center shrink-0">
-                                          <Check size={14} className="text-white"/>
-                                        </div>
-                                        <span className="text-slate-500 text-sm line-through">{item.text}</span>
-                                      </label>
-                                      {!readOnly && <button onClick={()=>deleteChecklistItem(item.id)} className="p-1.5 text-slate-400 hover:text-red-500"><Trash2 size={16}/></button>}
-                                    </div>
-                                  ))}
-                                </div>
-                              </details>
+                              <div>
+                                <button onClick={()=>setShowDoneTickets(v=>!v)} className="text-xs text-slate-400 flex items-center gap-1 py-1 hover:text-slate-600">
+                                  <ChevronDown size={13} className={`transition-transform ${showDoneTickets?'rotate-180':''}`}/> 已完成購票 ({ticketDone.length})
+                                </button>
+                                {showDoneTickets && (
+                                  <div className="space-y-2 mt-1">
+                                    {ticketDone.map(item=>(
+                                      <div key={item.id} className="flex items-center justify-between p-3 bg-white rounded-xl border border-slate-100 opacity-60">
+                                        <label className="flex items-center gap-3 flex-1 cursor-pointer">
+                                          <input type="checkbox" className="hidden" checked={item.checked} onChange={()=>toggleChecklist(item.id)}/>
+                                          <div className="w-6 h-6 rounded-full bg-emerald-500 border-2 border-emerald-500 flex items-center justify-center shrink-0">
+                                            <Check size={14} className="text-white"/>
+                                          </div>
+                                          <span className="text-slate-500 text-sm line-through">{item.text}</span>
+                                        </label>
+                                        {!readOnly && <button onClick={()=>deleteChecklistItem(item.id)} className="p-1.5 text-slate-400 hover:text-red-500"><Trash2 size={16}/></button>}
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
                             )}
                           </div>
                         </div>
@@ -912,38 +938,39 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                         <div key={item.id} className="flex items-center justify-between p-3 bg-white rounded-xl shadow-sm border border-slate-200">
                           <label className="flex items-center gap-3 flex-1 cursor-pointer">
                             <input type="checkbox" className="hidden" checked={item.checked} onChange={()=>toggleChecklist(item.id)}/>
-                            <div className="w-6 h-6 rounded-full border-2 border-slate-300 flex items-center justify-center transition-colors">
-                            </div>
+                            <div className="w-6 h-6 rounded-full border-2 border-slate-300 flex items-center justify-center transition-colors"/>
                             <span className="text-slate-700">{item.text}</span>
                           </label>
                           {!readOnly && <button onClick={()=>deleteChecklistItem(item.id)} className="p-2 text-slate-400 hover:text-red-500"><Trash2 size={18}/></button>}
                         </div>
                       ))}
                       {regDone.length > 0 && (
-                        <details className="group">
-                          <summary className="text-xs text-slate-400 cursor-pointer select-none list-none flex items-center gap-1 py-1 mt-1">
-                            <ChevronDown size={13} className="group-open:rotate-180 transition-transform"/> 已完成 ({regDone.length})
-                          </summary>
-                          <div className="space-y-2 mt-1">
-                            {regDone.map(item=>(
-                              <div key={item.id} className="flex items-center justify-between p-3 bg-white rounded-xl border border-slate-100 opacity-60">
-                                <label className="flex items-center gap-3 flex-1 cursor-pointer">
-                                  <input type="checkbox" className="hidden" checked={item.checked} onChange={()=>toggleChecklist(item.id)}/>
-                                  <div className="w-6 h-6 rounded-full bg-indigo-500 border-2 border-indigo-500 flex items-center justify-center">
-                                    <Check size={14} className="text-white"/>
-                                  </div>
-                                  <span className="text-slate-500 line-through">{item.text}</span>
-                                </label>
-                                {!readOnly && <button onClick={()=>deleteChecklistItem(item.id)} className="p-2 text-slate-400 hover:text-red-500"><Trash2 size={18}/></button>}
-                              </div>
-                            ))}
-                          </div>
-                        </details>
+                        <div>
+                          <button onClick={()=>setShowDoneRegular(v=>!v)} className="text-xs text-slate-400 flex items-center gap-1 py-1 hover:text-slate-600 mt-1">
+                            <ChevronDown size={13} className={`transition-transform ${showDoneRegular?'rotate-180':''}`}/> 已完成 ({regDone.length})
+                          </button>
+                          {showDoneRegular && (
+                            <div className="space-y-2 mt-1">
+                              {regDone.map(item=>(
+                                <div key={item.id} className="flex items-center justify-between p-3 bg-white rounded-xl border border-slate-100 opacity-60">
+                                  <label className="flex items-center gap-3 flex-1 cursor-pointer">
+                                    <input type="checkbox" className="hidden" checked={item.checked} onChange={()=>toggleChecklist(item.id)}/>
+                                    <div className="w-6 h-6 rounded-full bg-indigo-500 border-2 border-indigo-500 flex items-center justify-center">
+                                      <Check size={14} className="text-white"/>
+                                    </div>
+                                    <span className="text-slate-500 line-through">{item.text}</span>
+                                  </label>
+                                  {!readOnly && <button onClick={()=>deleteChecklistItem(item.id)} className="p-2 text-slate-400 hover:text-red-500"><Trash2 size={18}/></button>}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
                       )}
                       {checklist.length===0&&<div className="text-center py-10 text-slate-400 flex flex-col items-center gap-2"><ListTodo size={48} className="opacity-20"/><p>目前沒有清單項目</p></div>}
                     </>;
                   })()}
-                  </div>
+                </div>{/* end space-y-2 */}
               </>
             )}
 
@@ -1280,7 +1307,10 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                                             const tItem = checklist.find(c=>c.itineraryId===item.id&&c.segmentIdx===si);
                                             return tItem?.checked
                                               ? <div className="text-emerald-600 font-bold text-xs flex items-center gap-1"><Check size={12}/>已購票</div>
-                                              : <div className="text-amber-600 font-bold text-xs flex items-center gap-1">⚠️ 需提前購票{tItem?.ticketDeadline&&` — 截止 ${tItem.ticketDeadline.slice(5).replace('-','/')}`}</div>;
+                                              : <div className="text-amber-600 font-bold text-xs flex items-center gap-1 flex-wrap">
+                                                  <span>⚠️ 需提前購票{tItem?.ticketDeadline&&` — 截止 ${tItem.ticketDeadline.slice(5).replace('-','/')}`}</span>
+                                                  <button onClick={()=>{setMode('checklist');setListTab('pretrip');}} className="text-xs underline text-amber-700 hover:text-amber-900">查看清單</button>
+                                                </div>;
                                           })()}
                                         </div>
                                       ))}
@@ -1389,6 +1419,12 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                     </div>
                     <div className="text-right shrink-0">
                       <div className="font-bold text-red-500">{exp.amount} {exp.currency}</div>
+                      {exp.currency !== baseCurrency && (()=>{
+                        const expRate = rates[exp.currency] || 1;
+                        const baseRate = rates[baseCurrency] || 1;
+                        const converted = Math.round((exp.amount * expRate) / baseRate);
+                        return <div className="text-xs text-slate-400 mt-0.5">≈ {converted.toLocaleString()} {baseCurrency}</div>;
+                      })()}
                       {!readOnly&&<button onClick={e=>{e.stopPropagation();deleteExpense(exp.id);}} className="text-xs text-slate-400 hover:text-red-500 mt-1 px-2 py-1 rounded hover:bg-red-50 transition-colors">刪除</button>}
                     </div>
                   </div>
@@ -1605,7 +1641,7 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
 
               {/* 版本資訊 */}
               <div className="text-center pt-2 pb-1">
-                <span className="text-xs text-slate-300 font-mono">v0.6.1</span>
+                <span className="text-xs text-slate-300 font-mono">v0.6.2</span>
               </div>
             </div>
           </div>

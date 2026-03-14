@@ -70,7 +70,7 @@ export default function ExpenseFormModal({ expenseItem, initialData, users, rate
       finalCustom = calculated;
     }
 
-    onSave({
+    const expenseData = {
       id: initialData?.id || null,
       itineraryId: expenseItem?.id || initialData?.itineraryId || null,
       amount: totalAmount,
@@ -80,20 +80,22 @@ export default function ExpenseFormModal({ expenseItem, initialData, users, rate
       paidBy: splitMode === 'aa' ? 'AA' : paidBy,
       splitMode,
       splitAmong: splitMode === 'aa' ? aaSplitAmong : splitAmong,
-      aaSplitAmong: splitMode === 'aa' ? aaSplitAmong : undefined,
       customSplit: finalCustom,
-    });
+    };
+    if (splitMode === 'aa') expenseData.aaSplitAmong = aaSplitAmong;
+    onSave(expenseData);
   };
 
   return (
     <div className="fixed inset-0 bg-slate-900/40 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
-      <div className="bg-white w-full sm:max-w-md rounded-t-3xl sm:rounded-2xl max-h-[90vh] overflow-y-auto shadow-xl">
-        <div className="sticky top-0 bg-white p-4 border-b flex justify-between items-center z-10">
+      <div className="bg-white w-full sm:max-w-md rounded-t-3xl sm:rounded-2xl shadow-xl flex flex-col" style={{maxHeight:'92dvh'}}>
+        <div className="bg-white p-4 border-b flex justify-between items-center z-10 shrink-0">
           <h2 className="font-bold text-lg">{initialData ? '編輯花費' : '新增花費'}</h2>
           <button onClick={onClose} className="p-2 bg-slate-100 rounded-full hover:bg-slate-200"><X size={20}/></button>
         </div>
 
-        <form className="p-5 space-y-6" onSubmit={handleSubmit}>
+        <form className="flex flex-col flex-1 min-h-0" onSubmit={handleSubmit}>
+          <div className="p-5 space-y-6 overflow-y-auto flex-1">
           {expenseItem?.id && (
             <div className="bg-indigo-50 text-indigo-700 p-3 rounded-xl text-sm font-medium">
               📍 關聯行程: {expenseItem.title}
@@ -213,7 +215,9 @@ export default function ExpenseFormModal({ expenseItem, initialData, users, rate
             </div>
           </div>
 
-          <div className="pb-4">
+          </div>{/* end scrollable area */}
+
+          <div className="p-4 pt-3 border-t bg-white shrink-0">
             <button type="submit" className="w-full py-3 bg-indigo-600 text-white font-bold rounded-xl shadow-md hover:bg-indigo-700">儲存帳務</button>
           </div>
         </form>
