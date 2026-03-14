@@ -824,6 +824,11 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                     <div className="h-2.5 bg-slate-100 rounded-full overflow-hidden">
                       <div className="h-full bg-indigo-500 transition-all duration-500" style={{width:`${checklist.filter(i=>i.checked).length/checklist.length*100}%`}}/>
                     </div>
+                    {checklist.filter(i=>i.type==='ticket'&&!i.checked).length > 0 && (
+                      <div className="text-xs text-amber-600 font-bold mt-2 flex items-center gap-1">
+                        <Ticket size={12}/>尚有 {checklist.filter(i=>i.type==='ticket'&&!i.checked).length} 張票未購
+                      </div>
+                    )}
                   </div>
                 )}
                 {/* 新增清單（唯讀時隱藏） */}
@@ -834,19 +839,110 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                   </div>
                 )}
                   <div className="flex-1 space-y-2 overflow-y-auto max-h-[60vh] pr-1">
-                  {checklist.map(item=>(
-                    <div key={item.id} className="flex items-center justify-between p-3 bg-white rounded-xl shadow-sm border border-slate-200">
-                      <label className="flex items-center gap-3 flex-1 cursor-pointer">
-                        <input type="checkbox" className="hidden" checked={item.checked} onChange={()=>toggleChecklist(item.id)}/>
-                        <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center transition-colors ${item.checked?'bg-indigo-500 border-indigo-500':'border-slate-300'}`}>
-                          {item.checked&&<Check size={14} className="text-white"/>}
+                  {(()=>{
+                    const today = new Date(); today.setHours(0,0,0,0);
+                    const ticketItems   = checklist.filter(i=>i.type==='ticket');
+                    const regularItems  = checklist.filter(i=>i.type!=='ticket');
+                    const ticketPending = ticketItems.filter(i=>!i.checked);
+                    const ticketDone    = ticketItems.filter(i=>i.checked);
+                    const regPending    = regularItems.filter(i=>!i.checked);
+                    const regDone       = regularItems.filter(i=>i.checked);
+
+                    const DeadlineBadge = ({item}) => {
+                      if(!item.ticketDeadline) return null;
+                      const dl = new Date(item.ticketDeadline); dl.setHours(0,0,0,0);
+                      const diff = Math.round((dl-today)/(1000*60*60*24));
+                      if(diff < 0) return <span className="text-xs font-bold text-red-600 bg-red-50 px-2 py-0.5 rounded-full shrink-0">已逾期</span>;
+                      if(diff <= 30) return <span className="text-xs font-bold text-red-500 bg-red-50 px-2 py-0.5 rounded-full shrink-0">截止 {item.ticketDeadline.slice(5).replace('-','/')}（{diff}天）</span>;
+                      return <span className="text-xs text-slate-400 bg-slate-50 px-2 py-0.5 rounded-full shrink-0">截止 {item.ticketDeadline.slice(5).replace('-','/')}</span>;
+                    };
+
+                    return <>
+                      {/* 購票提醒區塊 */}
+                      {ticketItems.length > 0 && (
+                        <div className="mb-3">
+                          <div className="flex items-center gap-2 mb-2">
+                            <Ticket size={14} className="text-amber-500"/>
+                            <span className="text-xs font-bold text-amber-700">購票提醒</span>
+                            {ticketPending.length > 0 && <span className="text-xs bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded-full font-bold">{ticketPending.length} 待辦</span>}
+                          </div>
+                          <div className="space-y-2">
+                            {ticketPending.map(item=>(
+                              <div key={item.id} className="flex items-center justify-between p-3 bg-amber-50 rounded-xl border border-amber-200">
+                                <label className="flex items-center gap-3 flex-1 min-w-0 cursor-pointer">
+                                  <input type="checkbox" className="hidden" checked={item.checked} onChange={()=>toggleChecklist(item.id)}/>
+                                  <div className="w-6 h-6 rounded-full border-2 border-amber-400 flex items-center justify-center shrink-0 transition-colors">
+                                    <Ticket size={12} className="text-amber-400"/>
+                                  </div>
+                                  <span className="text-slate-700 text-sm truncate">{item.text}</span>
+                                </label>
+                                <div className="flex items-center gap-2 ml-2 shrink-0">
+                                  <DeadlineBadge item={item}/>
+                                  {!readOnly && <button onClick={()=>deleteChecklistItem(item.id)} className="p-1.5 text-slate-400 hover:text-red-500"><Trash2 size={16}/></button>}
+                                </div>
+                              </div>
+                            ))}
+                            {ticketDone.length > 0 && (
+                              <details className="group">
+                                <summary className="text-xs text-slate-400 cursor-pointer select-none list-none flex items-center gap-1 py-1">
+                                  <ChevronDown size={13} className="group-open:rotate-180 transition-transform"/> 已完成購票 ({ticketDone.length})
+                                </summary>
+                                <div className="space-y-2 mt-1">
+                                  {ticketDone.map(item=>(
+                                    <div key={item.id} className="flex items-center justify-between p-3 bg-white rounded-xl border border-slate-100 opacity-60">
+                                      <label className="flex items-center gap-3 flex-1 cursor-pointer">
+                                        <input type="checkbox" className="hidden" checked={item.checked} onChange={()=>toggleChecklist(item.id)}/>
+                                        <div className="w-6 h-6 rounded-full bg-emerald-500 border-2 border-emerald-500 flex items-center justify-center shrink-0">
+                                          <Check size={14} className="text-white"/>
+                                        </div>
+                                        <span className="text-slate-500 text-sm line-through">{item.text}</span>
+                                      </label>
+                                      {!readOnly && <button onClick={()=>deleteChecklistItem(item.id)} className="p-1.5 text-slate-400 hover:text-red-500"><Trash2 size={16}/></button>}
+                                    </div>
+                                  ))}
+                                </div>
+                              </details>
+                            )}
+                          </div>
                         </div>
-                        <span className={`text-slate-700 ${item.checked?'line-through opacity-50':''}`}>{item.text}</span>
-                      </label>
-                      {!readOnly && <button onClick={()=>deleteChecklistItem(item.id)} className="p-2 text-slate-400 hover:text-red-500"><Trash2 size={18}/></button>}
-                    </div>
-                  ))}
-                  {checklist.length===0&&<div className="text-center py-10 text-slate-400 flex flex-col items-center gap-2"><ListTodo size={48} className="opacity-20"/><p>目前沒有清單項目</p></div>}
+                      )}
+
+                      {/* 一般清單 */}
+                      {regPending.map(item=>(
+                        <div key={item.id} className="flex items-center justify-between p-3 bg-white rounded-xl shadow-sm border border-slate-200">
+                          <label className="flex items-center gap-3 flex-1 cursor-pointer">
+                            <input type="checkbox" className="hidden" checked={item.checked} onChange={()=>toggleChecklist(item.id)}/>
+                            <div className="w-6 h-6 rounded-full border-2 border-slate-300 flex items-center justify-center transition-colors">
+                            </div>
+                            <span className="text-slate-700">{item.text}</span>
+                          </label>
+                          {!readOnly && <button onClick={()=>deleteChecklistItem(item.id)} className="p-2 text-slate-400 hover:text-red-500"><Trash2 size={18}/></button>}
+                        </div>
+                      ))}
+                      {regDone.length > 0 && (
+                        <details className="group">
+                          <summary className="text-xs text-slate-400 cursor-pointer select-none list-none flex items-center gap-1 py-1 mt-1">
+                            <ChevronDown size={13} className="group-open:rotate-180 transition-transform"/> 已完成 ({regDone.length})
+                          </summary>
+                          <div className="space-y-2 mt-1">
+                            {regDone.map(item=>(
+                              <div key={item.id} className="flex items-center justify-between p-3 bg-white rounded-xl border border-slate-100 opacity-60">
+                                <label className="flex items-center gap-3 flex-1 cursor-pointer">
+                                  <input type="checkbox" className="hidden" checked={item.checked} onChange={()=>toggleChecklist(item.id)}/>
+                                  <div className="w-6 h-6 rounded-full bg-indigo-500 border-2 border-indigo-500 flex items-center justify-center">
+                                    <Check size={14} className="text-white"/>
+                                  </div>
+                                  <span className="text-slate-500 line-through">{item.text}</span>
+                                </label>
+                                {!readOnly && <button onClick={()=>deleteChecklistItem(item.id)} className="p-2 text-slate-400 hover:text-red-500"><Trash2 size={18}/></button>}
+                              </div>
+                            ))}
+                          </div>
+                        </details>
+                      )}
+                      {checklist.length===0&&<div className="text-center py-10 text-slate-400 flex flex-col items-center gap-2"><ListTodo size={48} className="opacity-20"/><p>目前沒有清單項目</p></div>}
+                    </>;
+                  })()}
                   </div>
               </>
             )}
@@ -1180,7 +1276,12 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                                           {seg.duration&&<div className="text-slate-500">⏱ 預估 {seg.duration}</div>}
                                           {seg.price&&<div className="text-slate-500">💴 {seg.price}</div>}
                                           {seg.url&&<a href={seg.url} target="_blank" rel="noreferrer" className="text-indigo-500 underline">🔗 購票連結</a>}
-                                          {seg.needTicket&&<div className="text-amber-600 font-bold">⚠️ 需提前購票</div>}
+                                          {seg.needTicket&&(()=>{
+                                            const tItem = checklist.find(c=>c.itineraryId===item.id&&c.segmentIdx===si);
+                                            return tItem?.checked
+                                              ? <div className="text-emerald-600 font-bold text-xs flex items-center gap-1"><Check size={12}/>已購票</div>
+                                              : <div className="text-amber-600 font-bold text-xs flex items-center gap-1">⚠️ 需提前購票{tItem?.ticketDeadline&&` — 截止 ${tItem.ticketDeadline.slice(5).replace('-','/')}`}</div>;
+                                          })()}
                                         </div>
                                       ))}
                                     </div>
@@ -1659,13 +1760,45 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                           <label className="block text-xs text-slate-500 mb-1">購票連結</label>
                           <input type="url" className="w-full border border-blue-200 rounded-lg p-2 text-sm bg-white outline-none" placeholder="https://" value={seg.url} onChange={e=>{const s=[...editingItem.transportSegments];s[si]={...s[si],url:e.target.value};setEditingItem({...editingItem,transportSegments:s});}}/>
                         </div>
-                        <label className="flex items-center gap-2 cursor-pointer">
-                          <input type="checkbox" checked={seg.needTicket} onChange={e=>{
-                            const s=[...editingItem.transportSegments];s[si]={...s[si],needTicket:e.target.checked};setEditingItem({...editingItem,transportSegments:s});
-                            if(e.target.checked){const text=`購票：${editingItem.title||seg.mode||'交通'}（第${si+1}段）`;if(!checklist.some(c=>c.text===text))setChecklist(prev=>[...prev,{id:crypto.randomUUID(),text,checked:false}]);}
-                          }} className="w-4 h-4 rounded accent-indigo-600"/>
-                          <span className="text-xs font-bold text-blue-700">需提前購票 → 自動加行前清單</span>
-                        </label>
+                        <div className="space-y-2">
+                          <label className="flex items-center gap-2 cursor-pointer">
+                            <input type="checkbox" checked={seg.needTicket} onChange={e=>{
+                              const s=[...editingItem.transportSegments];
+                              s[si]={...s[si],needTicket:e.target.checked};
+                              setEditingItem({...editingItem,transportSegments:s});
+                              if(e.target.checked){
+                                // 自動加入結構化購票清單項目
+                                const mode = seg.mode||`第${si+1}段交通`;
+                                const dest = editingItem.title||'';
+                                const date = editingItem.date||'';
+                                const text = `${date?fmtDate(date)+' ':''} ${mode}${dest?' → '+dest:''}`.trim();
+                                const exists = checklist.some(c=>c.itineraryId===editingItem.id&&c.segmentIdx===si);
+                                if(!exists) setChecklist(prev=>[...prev,{
+                                  id: crypto.randomUUID(), type:'ticket', text,
+                                  checked: false, ticketDate: date,
+                                  ticketMode: mode, ticketDest: dest,
+                                  ticketDeadline: '', itineraryId: editingItem.id, segmentIdx: si,
+                                }]);
+                              } else {
+                                // 取消勾選 → 移除對應購票清單（未完成的）
+                                setChecklist(prev=>prev.filter(c=>!(c.itineraryId===editingItem.id&&c.segmentIdx===si&&!c.checked)));
+                              }
+                            }} className="w-4 h-4 rounded accent-indigo-600"/>
+                            <span className="text-xs font-bold text-blue-700">需提前購票 → 自動加行前清單</span>
+                          </label>
+                          {seg.needTicket && (()=>{
+                            const ticketItem = checklist.find(c=>c.itineraryId===editingItem.id&&c.segmentIdx===si);
+                            return ticketItem ? (
+                              <div className="flex items-center gap-2 pl-6">
+                                <label className="text-xs text-slate-500 shrink-0">截止日期</label>
+                                <input type="date" className="flex-1 border border-amber-200 rounded-lg p-1.5 text-xs bg-amber-50 outline-none focus:ring-1 focus:ring-amber-400"
+                                  value={ticketItem.ticketDeadline||''}
+                                  onChange={e=>setChecklist(prev=>prev.map(c=>c.id===ticketItem.id?{...c,ticketDeadline:e.target.value}:c))}
+                                />
+                              </div>
+                            ) : null;
+                          })()}
+                        </div>
                       </div>
                     ))}
                     {(!editingItem.transportSegments || editingItem.transportSegments.length === 0) && (
