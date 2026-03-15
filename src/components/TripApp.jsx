@@ -203,11 +203,23 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
   const [itinerary,     setItinerary]     = useState(initialData.itinerary     || []);
   const [expenses,      setExpenses]      = useState(initialData.expenses      || []);
   const [flexTodos,     setFlexTodos]     = useState(initialData.flexTodos     || []);
-  const [accommodations, setAccommodations] = useState(initialData.accommodations || []); // [{date, name, location}]
+  const [accommodations, setAccommodations] = useState(initialData.accommodations || []);
+  const [savedSpots,    setSavedSpots]    = useState(initialData.savedSpots    || []); // 快速收藏景點
   const [showAddAccom,  setShowAddAccom]  = useState(false);
   const [newAccomDate,  setNewAccomDate]  = useState('');
   const [newAccomName,  setNewAccomName]  = useState('');
   const [newAccomLoc,   setNewAccomLoc]   = useState('');
+
+  // 住宿自動配色
+  const ACCOM_COLORS = ['teal','violet','rose','amber','sky','lime'];
+  const getAccomColor = (idx) => ACCOM_COLORS[idx % ACCOM_COLORS.length];
+
+  // 快速收藏 UI state
+  const [savedSpotName,    setSavedSpotName]    = useState('');
+  const [savedSpotNote,    setSavedSpotNote]    = useState('');
+  const [savedSpotUrl,     setSavedSpotUrl]     = useState('');
+  const [expandedSpotId,   setExpandedSpotId]   = useState(null);
+  const [addingSpotToDate, setAddingSpotToDate] = useState(null); // spotId being added to itinerary
 
   // ── UI state ──────────────────────────────────────────────────────────────
   const [mode,             setMode]             = useState('checklist');
@@ -307,8 +319,8 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
   const payload = useMemo(() => ({
     name: tripName, iconIndex: tripIconIndex,
     tripStartDate, tripEndDate,
-    users, rates, baseCurrency, categories, checklist, itinerary, expenses, flexTodos, accommodations,
-  }), [tripName, tripIconIndex, tripStartDate, tripEndDate, users, rates, baseCurrency, categories, checklist, itinerary, expenses, flexTodos, accommodations]);
+    users, rates, baseCurrency, categories, checklist, itinerary, expenses, flexTodos, accommodations, savedSpots,
+  }), [tripName, tripIconIndex, tripStartDate, tripEndDate, users, rates, baseCurrency, categories, checklist, itinerary, expenses, flexTodos, accommodations, savedSpots]);
 
   const debouncedPayload = useDebounce(payload, 1200);
   const isFirstSave = useRef(true);
@@ -377,21 +389,31 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
   };
 
   const saveItineraryItem = (item) => {
-    // 確保儲存 transportSegments，舊欄位保留供相容
-    const segments = item.transportSegments || [];
-    const withMeta = {
-      ...item,
-      transportSegments: segments,
-      // 同步舊欄位（第一段）供 CSV 匯出等相容使用
-      transport: segments[0]?.mode || '',
-      transportDeparture: segments[0]?.departure || '',
-      transportDuration: segments[0]?.duration || '',
-      transportPrice: segments[0]?.price || '',
-      transportUrl: segments[0]?.url || '',
-      transportNeedTicket: segments[0]?.needTicket || false,
-      lastEditedBy: currentUserName || '未知',
-      lastEditedAt: new Date().toISOString(),
-    };
+    const type = item.type || 'place';
+    let withMeta;
+    if (type === 'transport') {
+      // 交通節點：segments 直接放頂層
+      withMeta = {
+        ...item, type: 'transport',
+        lastEditedBy: currentUserName || '未知',
+        lastEditedAt: new Date().toISOString(),
+      };
+    } else {
+      // 景點節點：維持現有邏輯，向下相容
+      const segments = item.transportSegments || [];
+      withMeta = {
+        ...item, type: 'place',
+        transportSegments: segments,
+        transport: segments[0]?.mode || '',
+        transportDeparture: segments[0]?.departure || '',
+        transportDuration: segments[0]?.duration || '',
+        transportPrice: segments[0]?.price || '',
+        transportUrl: segments[0]?.url || '',
+        transportNeedTicket: segments[0]?.needTicket || false,
+        lastEditedBy: currentUserName || '未知',
+        lastEditedAt: new Date().toISOString(),
+      };
+    }
     if (item.id) setItinerary(itinerary.map(i => i.id === item.id ? withMeta : i));
     else         setItinerary([...itinerary, { ...withMeta, id: crypto.randomUUID() }]);
     setIsEditModalOpen(false);
@@ -829,7 +851,8 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
             <div className="sticky z-10 bg-slate-50 pb-3 pt-1" style={{top:'var(--header-h,112px)'}}>
               <div className="flex bg-slate-200 p-1 rounded-xl mb-3">
                 <button onClick={()=>setListTab('pretrip')}  className={`flex-1 py-2 text-sm font-bold rounded-lg transition-colors ${listTab==='pretrip'?'bg-white shadow-sm text-indigo-600':'text-slate-500'}`}>行前清單</button>
-                <button onClick={()=>setListTab('shopping')} className={`flex-1 py-2 text-sm font-bold rounded-lg transition-colors ${listTab==='shopping'?'bg-white shadow-sm text-indigo-600':'text-slate-500'}`}>各景點購物總覽</button>
+                <button onClick={()=>setListTab('shopping')} className={`flex-1 py-2 text-sm font-bold rounded-lg transition-colors ${listTab==='shopping'?'bg-white shadow-sm text-indigo-600':'text-slate-500'}`}>購物總覽</button>
+                <button onClick={()=>setListTab('spots')}    className={`flex-1 py-2 text-sm font-bold rounded-lg transition-colors ${listTab==='spots'?'bg-white shadow-sm text-indigo-600':'text-slate-500'}`}>收藏景點</button>
               </div>
 
               {listTab==='pretrip' && (
@@ -895,8 +918,8 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                               <div key={item.id} className="flex items-center justify-between p-3 bg-amber-50 rounded-xl border border-amber-200">
                                 <label className="flex items-center gap-3 flex-1 min-w-0 cursor-pointer">
                                   <input type="checkbox" className="hidden" checked={item.checked} onChange={()=>toggleChecklist(item.id)}/>
-                                  <div className="w-6 h-6 rounded-full border-2 border-amber-400 flex items-center justify-center shrink-0">
-                                    <Ticket size={12} className="text-amber-400"/>
+                                  <div className="w-6 h-6 rounded-full border-2 border-amber-400 bg-amber-400 flex items-center justify-center shrink-0">
+                                    <Ticket size={12} className="text-white"/>
                                   </div>
                                   <span className="text-slate-700 text-sm truncate">{item.text}</span>
                                 </label>
@@ -931,6 +954,11 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                             )}
                           </div>
                         </div>
+                      )}
+
+                      {/* 分隔線 */}
+                      {ticketItems.length > 0 && (regPending.length > 0 || regDone.length > 0) && (
+                        <div className="border-t border-slate-200 my-1"/>
                       )}
 
                       {/* 一般清單 */}
@@ -1026,6 +1054,65 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                     </>
                   );
                 })()}
+              </div>
+            )}
+
+            {/* ══ 收藏景點 tab ══ */}
+            {listTab==='spots' && (
+              <div className="space-y-3 pb-4">
+                {!readOnly && (
+                  <div className="bg-white rounded-xl border border-slate-200 p-4 space-y-3">
+                    <input type="text" placeholder="景點名稱..." className="w-full border rounded-xl p-3 text-sm bg-slate-50 outline-none focus:ring-2 focus:ring-indigo-400" value={savedSpotName} onChange={e=>setSavedSpotName(e.target.value)}/>
+                    <textarea placeholder="備註（看到哪裡的、有什麼特色…）" className="w-full border rounded-xl p-3 text-sm bg-slate-50 h-16 outline-none resize-none focus:ring-2 focus:ring-indigo-400" value={savedSpotNote} onChange={e=>setSavedSpotNote(e.target.value)}/>
+                    <input type="url" placeholder="來源連結 https://..." className="w-full border rounded-xl p-3 text-sm bg-slate-50 outline-none focus:ring-2 focus:ring-indigo-400" value={savedSpotUrl} onChange={e=>setSavedSpotUrl(e.target.value)}/>
+                    <button onClick={()=>{
+                      if(!savedSpotName.trim())return;
+                      setSavedSpots(p=>[...p,{id:crypto.randomUUID(),name:savedSpotName.trim(),note:savedSpotNote.trim(),url:savedSpotUrl.trim(),createdAt:new Date().toISOString()}]);
+                      setSavedSpotName('');setSavedSpotNote('');setSavedSpotUrl('');
+                    }} className="w-full py-2.5 bg-indigo-600 text-white font-bold rounded-xl hover:bg-indigo-700 text-sm flex items-center justify-center gap-2">
+                      <Plus size={16}/>加入收藏
+                    </button>
+                  </div>
+                )}
+                {savedSpots.length===0 && <div className="text-center py-10 text-slate-400 flex flex-col items-center gap-2"><Star size={40} className="opacity-20"/><p>還沒有收藏景點</p><p className="text-xs">從網路上看到不錯的景點，先存在這裡</p></div>}
+                {savedSpots.map(spot=>(
+                  <div key={spot.id} className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+                    <div className="flex items-center justify-between p-3">
+                      <button onClick={()=>setExpandedSpotId(expandedSpotId===spot.id?null:spot.id)} className="flex-1 text-left flex items-center gap-2">
+                        <Star size={15} className="text-amber-400 shrink-0"/>
+                        <span className="font-bold text-slate-800 text-sm">{spot.name}</span>
+                        {(spot.note||spot.url)&&<ChevronDown size={14} className={`text-slate-400 transition-transform ${expandedSpotId===spot.id?'rotate-180':''}`}/>}
+                      </button>
+                      <div className="flex gap-1 shrink-0">
+                        {!readOnly&&<button onClick={()=>setAddingSpotToDate(spot.id)} className="text-xs text-indigo-600 bg-indigo-50 border border-indigo-200 px-2.5 py-1.5 rounded-full hover:bg-indigo-100 font-bold flex items-center gap-1"><Plus size={12}/>加入行程</button>}
+                        {!readOnly&&<button onClick={()=>setSavedSpots(p=>p.filter(s=>s.id!==spot.id))} className="p-1.5 text-slate-400 hover:text-red-500"><Trash2 size={15}/></button>}
+                      </div>
+                    </div>
+                    {expandedSpotId===spot.id&&(spot.note||spot.url)&&(
+                      <div className="px-4 pb-3 space-y-1 border-t border-slate-100 pt-2">
+                        {spot.note&&<p className="text-xs text-slate-600">{spot.note}</p>}
+                        {spot.url&&<a href={spot.url} target="_blank" rel="noreferrer" className="text-xs text-indigo-500 underline truncate block">{spot.url}</a>}
+                      </div>
+                    )}
+                    {addingSpotToDate===spot.id&&(
+                      <div className="px-4 pb-3 border-t border-indigo-100 pt-2 bg-indigo-50 space-y-2">
+                        <p className="text-xs font-bold text-indigo-700">選擇要加入的日期：</p>
+                        <select className="w-full border border-indigo-200 rounded-lg p-2 text-sm bg-white outline-none" defaultValue="" onChange={e=>{
+                          if(!e.target.value)return;
+                          setItinerary(p=>[...p,{id:crypto.randomUUID(),type:'place',date:e.target.value,time:'',title:spot.name,location:'',notes:spot.note||'',website:spot.url||'',transport:'',transportSegments:[],shoppingList:[],tickets:'',lastEditedBy:currentUserName||'',lastEditedAt:new Date().toISOString()}]);
+                          setSavedSpots(p=>p.filter(s=>s.id!==spot.id));
+                          setAddingSpotToDate(null);
+                          showToast('✅ 已加入行程');
+                        }}>
+                          <option value="">選擇日期...</option>
+                          {(tripDateRange.length>0?tripDateRange:[...new Set(itinerary.map(i=>i.date))].filter(Boolean).sort()).map((d,i)=>{const dt=new Date(d);return<option key={d} value={d}>第{i+1}天 {dt.getMonth()+1}/{dt.getDate()}</option>;})}
+                          <option value="undated">不指定日期</option>
+                        </select>
+                        <button onClick={()=>setAddingSpotToDate(null)} className="text-xs text-slate-500 w-full text-center">取消</button>
+                      </div>
+                    )}
+                  </div>
+                ))}
               </div>
             )}
           </div>
@@ -1143,7 +1230,20 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                       {tripDayLabel(dateStr)}
                     </h2>
                     <div className="h-px bg-indigo-200 flex-1"/>
-                    {/* 住宿導航按鈕 — 第一天不顯示出發處，最後一天不顯示返回 */}
+                    {/* 日期旁新增按鈕（編輯模式） */}
+                    {isEditMode && !readOnly && (
+                      <div className="flex gap-1 shrink-0">
+                        <button
+                          onClick={()=>{setEditingItem({type:'place',date:dateStr,title:'',time:'12:00',location:'',transport:'',notes:'',website:'',hours:'',shoppingList:[],tickets:'',transportSegments:[]});setIsOptionalOpen(false);setIsEditModalOpen(true);}}
+                          className="flex items-center gap-1 text-xs px-2.5 py-1.5 bg-indigo-600 text-white rounded-full hover:bg-indigo-700 transition-colors"
+                        ><Plus size={13}/>景點</button>
+                        <button
+                          onClick={()=>{setEditingItem({type:'transport',date:dateStr,time:'',title:'',transportSegments:[emptySegment()],notes:''});setIsOptionalOpen(false);setIsEditModalOpen(true);}}
+                          className="flex items-center gap-1 text-xs px-2.5 py-1.5 bg-slate-600 text-white rounded-full hover:bg-slate-700 transition-colors"
+                        ><Car size={13}/>交通</button>
+                      </div>
+                    )}
+                    {/* 住宿導航按鈕 */}
                     {accom && !isFirst && (
                       <a href={`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(accom.location||accom.name)}`}
                         target="_blank" rel="noreferrer"
@@ -1188,18 +1288,30 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                             <div className="flex-1 min-w-0" onClick={e => { if (!isTarget) { e.stopPropagation(); setEditingItem({...item, transportSegments: normalizeTransportSegments(item)}); setIsOptionalOpen(false); setIsEditModalOpen(true); } }}>
                               <div className="flex items-center gap-2 mb-0.5">
                                 <span className={`font-bold text-sm ${timeWarn ? 'text-red-500' : 'text-indigo-600'}`}>{item.time}{timeWarn && ' ⚠️'}</span>
-                                <span className="font-bold truncate text-slate-800">{item.title}</span>
+                                {item.type==='transport'
+                                  ? <Car size={13} className="text-slate-400 shrink-0"/>
+                                  : <MapPin size={13} className="text-slate-400 shrink-0"/>
+                                }
+                                <span className="font-bold truncate text-slate-800">
+                                  {item.type==='transport'
+                                    ? (item.transportSegments?.map(s=>s.mode).filter(Boolean).join(' → ') || item.title || '交通')
+                                    : item.title
+                                  }
+                                </span>
                                 {isMoving && <span className="text-xs bg-indigo-500 text-white px-1.5 py-0.5 rounded-full shrink-0">移動中</span>}
                               </div>
                               <div className="text-xs text-slate-400 truncate flex items-center gap-1">
-                                <MapPin size={11}/>{item.location || '無地點'}
+                                {item.type==='transport'
+                                  ? <>{item.transportSegments?.length > 1 && <span className="bg-slate-100 px-1 rounded">{item.transportSegments.length}段</span>}{item.notes && <span className="truncate">{item.notes}</span>}</>
+                                  : <><MapPin size={11}/>{item.location || '無地點'}</>
+                                }
                                 {isTarget && <span className="ml-auto text-indigo-500 font-bold">點此移到這裡 ↑</span>}
                               </div>
                             </div>
 
                             {!movingId && (
                               <div className="flex gap-1.5 shrink-0">
-                                <button onClick={e => { e.stopPropagation(); setEditingItem({...item, transportSegments: normalizeTransportSegments(item)}); setIsOptionalOpen(false); setIsEditModalOpen(true); }} className="p-2 text-blue-600 bg-blue-50 hover:bg-blue-100 rounded-lg"><Edit2 size={16}/></button>
+                                <button onClick={e => { e.stopPropagation(); setEditingItem(item.type==='transport'?{...item}:{...item, transportSegments: normalizeTransportSegments(item)}); setIsOptionalOpen(false); setIsEditModalOpen(true); }} className="p-2 text-blue-600 bg-blue-50 hover:bg-blue-100 rounded-lg"><Edit2 size={16}/></button>
                                 <button onClick={e => { e.stopPropagation(); deleteItineraryItem(item.id); }} className="p-2 text-red-500 bg-red-50 hover:bg-red-100 rounded-lg"><Trash2 size={16}/></button>
                               </div>
                             )}
@@ -1211,6 +1323,56 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                     <div className="relative border-l-2 border-indigo-200 ml-4 space-y-8 pb-4">
                       {byDate[dateStr].map((item,dayIdx)=>{
                         const next=byDate[dateStr][dayIdx+1];
+                        // 交通節點 — 較窄的橫條樣式
+                        if(item.type==='transport'){
+                          const segs = item.transportSegments||[];
+                          const summary = segs.map(s=>s.mode).filter(Boolean).join(' → ') || item.title || '交通';
+                          const isExpTrans = expandedTransport.has(item.id);
+                          return(
+                            <div key={item.id} className="relative pl-6">
+                              <div className="absolute -left-[9px] top-2 w-4 h-4 bg-slate-400 rounded-full border-4 border-slate-50"/>
+                              <div className="bg-slate-50 rounded-xl border border-slate-200 px-3 py-2">
+                                <div className="flex items-center gap-2">
+                                  {item.time&&<span className="text-xs text-slate-400 font-mono shrink-0">{item.time}</span>}
+                                  <Car size={14} className="text-slate-500 shrink-0"/>
+                                  <button onClick={()=>setExpandedTransport(prev=>{const s=new Set(prev);s.has(item.id)?s.delete(item.id):s.add(item.id);return s;})}
+                                    className="flex-1 text-sm font-bold text-slate-700 text-left flex items-center gap-1 hover:text-indigo-600">
+                                    {summary}
+                                    {segs.length>1&&<span className="text-xs bg-slate-200 px-1 rounded">{segs.length}段</span>}
+                                    {isExpTrans?<ChevronUp size={13} className="text-slate-400"/>:<ChevronDown size={13} className="text-slate-400"/>}
+                                  </button>
+                                </div>
+                                {isExpTrans&&segs.length>0&&(
+                                  <div className="mt-2 space-y-2 pl-4">
+                                    {segs.map((seg,si)=>(
+                                      <div key={seg.id} className="text-xs space-y-0.5 border-l-2 border-slate-200 pl-2">
+                                        <div className="font-bold text-slate-600">{si+1}. {seg.mode||'未填'}{seg.from&&seg.to&&<span className="font-normal text-slate-400 ml-1">{seg.from} → {seg.to}</span>}</div>
+                                        {seg.departure&&<div className="text-slate-500">🕐 {seg.departure}</div>}
+                                        {seg.duration&&<div className="text-slate-500">⏱ {seg.duration}</div>}
+                                        {seg.price&&<div className="flex items-center gap-2 text-slate-500">💴 {seg.price}
+                                          {!readOnly&&<button onClick={()=>setAddingExpenseFor({id:item.id,title:`${item.title||summary} 交通（${seg.mode}）`,_prefill:{description:`${seg.mode||'交通'}`,amount:parseFloat(seg.price)||0,currency:baseCurrency}})}
+                                            className="text-emerald-600 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded-full flex items-center gap-0.5 hover:bg-emerald-100"><DollarSign size={10}/>記帳</button>}
+                                        </div>}
+                                        {seg.url&&<a href={seg.url} target="_blank" rel="noreferrer" className="text-indigo-500 underline">🔗 購票</a>}
+                                        {seg.needTicket&&(()=>{
+                                          const tItem=checklist.find(c=>c.itineraryId===item.id&&c.segmentIdx===si);
+                                          return tItem?.checked
+                                            ?<div className="text-emerald-600 font-bold flex items-center gap-1"><Check size={11}/>已購票</div>
+                                            :<div className="text-amber-600 font-bold flex items-center gap-1 flex-wrap">
+                                              <span>⚠️ 需購票{tItem?.ticketDeadline&&` 截止 ${tItem.ticketDeadline.slice(5).replace('-','/')}`}</span>
+                                              <button onClick={()=>{setMode('checklist');setListTab('pretrip');}} className="underline text-amber-700 text-xs">查看</button>
+                                            </div>;
+                                        })()}
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                                {item.notes&&<div className="text-xs text-slate-500 mt-1 pl-4">{item.notes}</div>}
+                              </div>
+                            </div>
+                          );
+                        }
+                        // 景點節點 — 現有卡片樣式
                         return(
                           <div key={item.id} className="relative pl-6">
                             <div className="absolute -left-[9px] top-1 w-4 h-4 bg-indigo-500 rounded-full border-4 border-slate-50"/>
@@ -1641,7 +1803,7 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
 
               {/* 版本資訊 */}
               <div className="text-center pt-2 pb-1">
-                <span className="text-xs text-slate-300 font-mono">v0.6.2</span>
+                <span className="text-xs text-slate-300 font-mono">v0.7.0</span>
               </div>
             </div>
           </div>
@@ -1701,12 +1863,25 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
         <div className="fixed inset-0 bg-slate-900/40 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
           <div className="bg-white w-full sm:max-w-md rounded-t-3xl sm:rounded-2xl max-h-[90vh] overflow-y-auto shadow-xl">
             <div className="sticky top-0 bg-white/95 backdrop-blur-sm p-4 border-b flex justify-between items-center z-10">
-              <h2 className="font-bold text-lg">{editingItem.id?'編輯行程':'新增行程'}</h2>
+              <div className="flex items-center gap-2">
+                <h2 className="font-bold text-lg">{editingItem.id?'編輯':'新增'}</h2>
+                {/* type 切換（新增時可切換，編輯時鎖定） */}
+                {!editingItem.id ? (
+                  <div className="flex bg-slate-100 p-1 rounded-lg">
+                    <button onClick={()=>setEditingItem({...editingItem,type:'place'})} className={`px-3 py-1 text-xs font-bold rounded-md transition-colors ${(editingItem.type||'place')==='place'?'bg-white shadow-sm text-indigo-700':'text-slate-500'}`}><MapPin size={12} className="inline mr-1"/>景點</button>
+                    <button onClick={()=>setEditingItem({...editingItem,type:'transport',transportSegments:editingItem.transportSegments?.length?editingItem.transportSegments:[emptySegment()]})} className={`px-3 py-1 text-xs font-bold rounded-md transition-colors ${editingItem.type==='transport'?'bg-white shadow-sm text-slate-700':'text-slate-500'}`}><Car size={12} className="inline mr-1"/>交通</button>
+                  </div>
+                ) : (
+                  <span className={`text-xs font-bold px-2 py-1 rounded-full ${editingItem.type==='transport'?'bg-slate-100 text-slate-600':'bg-indigo-50 text-indigo-600'}`}>
+                    {editingItem.type==='transport'?'🚗 交通':'📍 景點'}
+                  </span>
+                )}
+              </div>
               <button onClick={()=>{setIsEditModalOpen(false);setIsOptionalOpen(false);}} className="p-2 bg-slate-100 rounded-full hover:bg-slate-200"><X size={20}/></button>
             </div>
             <div className="p-5 space-y-4">
 
-              {/* ── 必填區 ── */}
+              {/* ── 日期 / 時間（共用） ── */}
               <div className="grid grid-cols-4 gap-3">
                 <div className="col-span-2">
                   <label className="block text-xs font-bold text-slate-500 mb-1">日期</label>
@@ -1725,125 +1900,90 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                 </div>
               </div>
 
-              <div>
-                <label className="block text-xs font-bold text-slate-500 mb-1">景點 / 標題 <span className="text-red-400">*</span></label>
-                <input type="text" className="w-full border rounded-lg p-2 text-sm bg-slate-50 focus:ring-2 focus:ring-indigo-300 outline-none" placeholder="例如：奇美博物館" value={editingItem.title||''} onChange={e=>setEditingItem({...editingItem,title:e.target.value})}/>
-              </div>
+              {/* ── 交通節點專用欄位 ── */}
+              {editingItem.type==='transport' && (
+                <div className="space-y-3">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-500 mb-1">交通段落 <span className="text-red-400">*</span></label>
+                    <div className="space-y-3">
+                      {(editingItem.transportSegments||[emptySegment()]).map((seg,si)=>(
+                        <div key={seg.id} className="bg-slate-50 border border-slate-200 rounded-xl p-3 space-y-2">
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-bold text-slate-500">第 {si+1} 段</span>
+                            {si>0&&<button onClick={()=>setEditingItem({...editingItem,transportSegments:editingItem.transportSegments.filter((_,i)=>i!==si)})} className="text-slate-400 hover:text-red-500"><X size={14}/></button>}
+                          </div>
+                          <input type="text" placeholder="交通方式（高鐵、巴士…）" className="w-full border rounded-lg p-2 text-sm bg-white outline-none focus:ring-2 focus:ring-slate-300"
+                            value={seg.mode} onChange={e=>{const s=[...editingItem.transportSegments];s[si]={...s[si],mode:e.target.value};setEditingItem({...editingItem,transportSegments:s});}}/>
+                          <div className="grid grid-cols-2 gap-2">
+                            <div><label className="text-xs text-slate-400">搭車地點</label>
+                              <input type="text" placeholder="台南火車站" className="w-full border rounded-lg p-2 text-sm bg-white outline-none" value={seg.from||''} onChange={e=>{const s=[...editingItem.transportSegments];s[si]={...s[si],from:e.target.value};setEditingItem({...editingItem,transportSegments:s});}}/>
+                            </div>
+                            <div><label className="text-xs text-slate-400">下車地點</label>
+                              <input type="text" placeholder="桃園機場" className="w-full border rounded-lg p-2 text-sm bg-white outline-none" value={seg.to||''} onChange={e=>{const s=[...editingItem.transportSegments];s[si]={...s[si],to:e.target.value};setEditingItem({...editingItem,transportSegments:s});}}/>
+                            </div>
+                            <div><label className="text-xs text-slate-400">發車時間</label>
+                              <input type="time" className="w-full border rounded-lg p-2 text-sm bg-white outline-none" value={seg.departure||''} onChange={e=>{const s=[...editingItem.transportSegments];s[si]={...s[si],departure:e.target.value};setEditingItem({...editingItem,transportSegments:s});}}/></div>
+                            <div><label className="text-xs text-slate-400">費用</label>
+                              <input type="text" placeholder="1190" className="w-full border rounded-lg p-2 text-sm bg-white outline-none" value={seg.price||''} onChange={e=>{const s=[...editingItem.transportSegments];s[si]={...s[si],price:e.target.value};setEditingItem({...editingItem,transportSegments:s});}}/></div>
+                          </div>
+                          <div className="grid grid-cols-2 gap-2">
+                            <div><label className="text-xs text-slate-400">預估時間</label>
+                              <input type="text" placeholder="30分鐘" className="w-full border rounded-lg p-2 text-sm bg-white outline-none" value={seg.duration||''} onChange={e=>{const s=[...editingItem.transportSegments];s[si]={...s[si],duration:e.target.value};setEditingItem({...editingItem,transportSegments:s});}}/></div>
+                            <div><label className="text-xs text-slate-400">購票截止日</label>
+                              <input type="date" className="w-full border rounded-lg p-2 text-sm bg-white outline-none" value={seg.ticketDeadline||''} onChange={e=>{const s=[...editingItem.transportSegments];s[si]={...s[si],ticketDeadline:e.target.value};setEditingItem({...editingItem,transportSegments:s});}}/></div>
+                            </div>
+                          <input type="url" placeholder="購票連結 https://" className="w-full border rounded-lg p-2 text-sm bg-white outline-none" value={seg.url||''} onChange={e=>{const s=[...editingItem.transportSegments];s[si]={...s[si],url:e.target.value};setEditingItem({...editingItem,transportSegments:s});}}/>
+                          <label className="flex items-center gap-2 cursor-pointer">
+                            <input type="checkbox" checked={seg.needTicket||false} onChange={e=>{
+                              const s=[...editingItem.transportSegments];s[si]={...s[si],needTicket:e.target.checked};setEditingItem({...editingItem,transportSegments:s});
+                              if(e.target.checked){
+                                const mode=seg.mode||`第${si+1}段交通`;const dest=editingItem.title||'';const date=editingItem.date||'';
+                                const text=`${date?fmtDate(date)+' ':''}${mode}${dest?' → '+dest:''}`.trim();
+                                const exists=checklist.some(c=>c.itineraryId===editingItem.id&&c.segmentIdx===si);
+                                if(!exists)setChecklist(prev=>[...prev,{id:crypto.randomUUID(),type:'ticket',text,checked:false,ticketDate:date,ticketMode:mode,ticketDest:dest,ticketDeadline:seg.ticketDeadline||'',itineraryId:editingItem.id,segmentIdx:si}]);
+                              } else {
+                                setChecklist(prev=>prev.filter(c=>!(c.itineraryId===editingItem.id&&c.segmentIdx===si&&!c.checked)));
+                              }
+                            }} className="w-4 h-4 rounded accent-indigo-600"/>
+                            <span className="text-xs font-bold text-blue-700">需提前購票 → 加行前清單</span>
+                          </label>
+                      </div>
+                      ))}
+                      <button onClick={()=>setEditingItem({...editingItem,transportSegments:[...(editingItem.transportSegments||[]),emptySegment()]})}
+                        className="w-full py-2 text-sm text-slate-600 font-bold border border-dashed border-slate-300 rounded-xl hover:bg-slate-50 flex items-center justify-center gap-1">
+                        <Plus size={14}/>新增一段
+                      </button>
+                    </div>
+                  <div>
+                    <label className="block text-xs font-bold text-slate-500 mb-1">備註（選填）</label>
+                    <textarea className="w-full border rounded-lg p-2 text-sm bg-slate-50 h-16 outline-none resize-none" value={editingItem.notes||''} onChange={e=>setEditingItem({...editingItem,notes:e.target.value})}/>
+                  </div>
+                  </div>
+                </div>
+              )}
 
-              <div>
-                <label className="block text-xs font-bold text-slate-500 mb-1">地點</label>
-                <div className="relative"><MapPin size={16} className="absolute left-3 top-2.5 text-slate-400"/><input type="text" className="w-full border rounded-lg p-2 pl-9 text-sm bg-slate-50 focus:ring-2 focus:ring-indigo-300 outline-none" placeholder="店家名稱或地址（可從 Google Maps 複製）" value={editingItem.location||''} onChange={e=>setEditingItem({...editingItem,location:e.target.value})}/></div>
-              </div>
-
-              <div>
-                <label className="block text-xs font-bold text-slate-500 mb-1">交通方式（前往此地）</label>
-                <input type="text" className="w-full border rounded-lg p-2 text-sm bg-slate-50 focus:ring-2 focus:ring-indigo-300 outline-none" placeholder="如：搭地鐵、步行" value={(editingItem.transportSegments?.[0]?.mode ?? editingItem.transport) || ''} onChange={e=>{
-                  const segs = editingItem.transportSegments?.length > 0 ? [...editingItem.transportSegments] : [emptySegment()];
-                  segs[0] = {...segs[0], mode: e.target.value};
-                  setEditingItem({...editingItem, transportSegments: segs});
-                }}/>
-              </div>
-
-              <div>
-                <label className="block text-xs font-bold text-slate-500 mb-1">備註</label>
-                <textarea className="w-full border rounded-lg p-2 text-sm bg-slate-50 h-16 focus:ring-2 focus:ring-indigo-300 outline-none resize-none" placeholder="注意事項..." value={editingItem.notes||''} onChange={e=>setEditingItem({...editingItem,notes:e.target.value})}/>
-              </div>
-
-              {/* ── 選填區 ── */}
-              <div>
+              {/* ── 景點節點欄位 ── */}
+              {(editingItem.type||'place')==='place' && (<>
+                <div>
+                  <label className="block text-xs font-bold text-slate-500 mb-1">景點 / 標題 <span className="text-red-400">*</span></label>
+                  <input type="text" className="w-full border rounded-lg p-2 text-sm bg-slate-50 focus:ring-2 focus:ring-indigo-300 outline-none" placeholder="例如：奇美博物館" value={editingItem.title||''} onChange={e=>setEditingItem({...editingItem,title:e.target.value})}/>
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-500 mb-1">地點</label>
+                  <div className="relative"><MapPin size={16} className="absolute left-3 top-2.5 text-slate-400"/><input type="text" className="w-full border rounded-lg p-2 pl-9 text-sm bg-slate-50 focus:ring-2 focus:ring-indigo-300 outline-none" placeholder="店家名稱或地址（可從 Google Maps 複製）" value={editingItem.location||''} onChange={e=>setEditingItem({...editingItem,location:e.target.value})}/></div>
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-500 mb-1">備註</label>
+                  <textarea className="w-full border rounded-lg p-2 text-sm bg-slate-50 h-16 focus:ring-2 focus:ring-indigo-300 outline-none resize-none" placeholder="注意事項..." value={editingItem.notes||''} onChange={e=>setEditingItem({...editingItem,notes:e.target.value})}/>
+                </div>
                 <button
                   onClick={()=>setIsOptionalOpen(v=>!v)}
                   className="w-full flex items-center justify-center gap-2 py-2 text-sm font-bold text-slate-500 border border-dashed border-slate-300 rounded-xl hover:bg-slate-50 transition-colors"
                 >
                   {isOptionalOpen ? <><ChevronUp size={16}/>收起選填欄位</> : <><Plus size={16}/>新增更多資訊（選填）</>}
                 </button>
-              </div>
 
-              {isOptionalOpen && (
-                <div className="space-y-4 pt-1">
-
-                  {/* 交通細節 — 多段 */}
-                  <div className="bg-blue-50/60 rounded-xl p-3 border border-blue-100 space-y-3">
-                    <div className="flex items-center justify-between">
-                      <label className="text-xs font-bold text-blue-700 flex items-center gap-1"><Car size={14}/>交通細節</label>
-                      <button onClick={()=>{const segs=editingItem.transportSegments?.length>0?[...editingItem.transportSegments]:[emptySegment()];setEditingItem({...editingItem,transportSegments:[...segs,emptySegment()]});}} className="text-xs text-indigo-600 font-bold flex items-center gap-0.5 hover:text-indigo-800"><Plus size={13}/>新增一段</button>
-                    </div>
-                    {(editingItem.transportSegments?.length > 0 ? editingItem.transportSegments : []).map((seg, si)=>(
-                      <div key={seg.id} className="bg-white rounded-lg p-3 border border-blue-100 space-y-2">
-                        <div className="flex items-center justify-between mb-1">
-                          <span className="text-xs font-bold text-slate-600">第 {si+1} 段</span>
-                          {si > 0 && <button onClick={()=>setEditingItem({...editingItem,transportSegments:editingItem.transportSegments.filter((_,i)=>i!==si)})} className="text-slate-400 hover:text-red-500"><X size={14}/></button>}
-                        </div>
-                        <div className="grid grid-cols-2 gap-2">
-                          <div>
-                            <label className="block text-xs text-slate-500 mb-1">交通方式</label>
-                            <input type="text" className="w-full border border-blue-200 rounded-lg p-2 text-sm bg-slate-50 outline-none" placeholder="火車、巴士" value={seg.mode} onChange={e=>{const s=[...editingItem.transportSegments];s[si]={...s[si],mode:e.target.value};setEditingItem({...editingItem,transportSegments:s});}}/>
-                          </div>
-                          <div>
-                            <label className="block text-xs text-slate-500 mb-1">發車時間</label>
-                            <input type="time" className="w-full border border-blue-200 rounded-lg p-2 text-sm bg-white outline-none" value={seg.departure} onChange={e=>{const s=[...editingItem.transportSegments];s[si]={...s[si],departure:e.target.value};setEditingItem({...editingItem,transportSegments:s});}}/>
-                          </div>
-                          <div>
-                            <label className="block text-xs text-slate-500 mb-1">預估時間</label>
-                            <input type="text" className="w-full border border-blue-200 rounded-lg p-2 text-sm bg-white outline-none" placeholder="30分鐘" value={seg.duration} onChange={e=>{const s=[...editingItem.transportSegments];s[si]={...s[si],duration:e.target.value};setEditingItem({...editingItem,transportSegments:s});}}/>
-                          </div>
-                          <div>
-                            <label className="block text-xs text-slate-500 mb-1">票價</label>
-                            <input type="text" className="w-full border border-blue-200 rounded-lg p-2 text-sm bg-white outline-none" placeholder="3600" value={seg.price} onChange={e=>{const s=[...editingItem.transportSegments];s[si]={...s[si],price:e.target.value};setEditingItem({...editingItem,transportSegments:s});}}/>
-                          </div>
-                        </div>
-                        <div>
-                          <label className="block text-xs text-slate-500 mb-1">購票連結</label>
-                          <input type="url" className="w-full border border-blue-200 rounded-lg p-2 text-sm bg-white outline-none" placeholder="https://" value={seg.url} onChange={e=>{const s=[...editingItem.transportSegments];s[si]={...s[si],url:e.target.value};setEditingItem({...editingItem,transportSegments:s});}}/>
-                        </div>
-                        <div className="space-y-2">
-                          <label className="flex items-center gap-2 cursor-pointer">
-                            <input type="checkbox" checked={seg.needTicket} onChange={e=>{
-                              const s=[...editingItem.transportSegments];
-                              s[si]={...s[si],needTicket:e.target.checked};
-                              setEditingItem({...editingItem,transportSegments:s});
-                              if(e.target.checked){
-                                // 自動加入結構化購票清單項目
-                                const mode = seg.mode||`第${si+1}段交通`;
-                                const dest = editingItem.title||'';
-                                const date = editingItem.date||'';
-                                const text = `${date?fmtDate(date)+' ':''} ${mode}${dest?' → '+dest:''}`.trim();
-                                const exists = checklist.some(c=>c.itineraryId===editingItem.id&&c.segmentIdx===si);
-                                if(!exists) setChecklist(prev=>[...prev,{
-                                  id: crypto.randomUUID(), type:'ticket', text,
-                                  checked: false, ticketDate: date,
-                                  ticketMode: mode, ticketDest: dest,
-                                  ticketDeadline: '', itineraryId: editingItem.id, segmentIdx: si,
-                                }]);
-                              } else {
-                                // 取消勾選 → 移除對應購票清單（未完成的）
-                                setChecklist(prev=>prev.filter(c=>!(c.itineraryId===editingItem.id&&c.segmentIdx===si&&!c.checked)));
-                              }
-                            }} className="w-4 h-4 rounded accent-indigo-600"/>
-                            <span className="text-xs font-bold text-blue-700">需提前購票 → 自動加行前清單</span>
-                          </label>
-                          {seg.needTicket && (()=>{
-                            const ticketItem = checklist.find(c=>c.itineraryId===editingItem.id&&c.segmentIdx===si);
-                            return ticketItem ? (
-                              <div className="flex items-center gap-2 pl-6">
-                                <label className="text-xs text-slate-500 shrink-0">截止日期</label>
-                                <input type="date" className="flex-1 border border-amber-200 rounded-lg p-1.5 text-xs bg-amber-50 outline-none focus:ring-1 focus:ring-amber-400"
-                                  value={ticketItem.ticketDeadline||''}
-                                  onChange={e=>setChecklist(prev=>prev.map(c=>c.id===ticketItem.id?{...c,ticketDeadline:e.target.value}:c))}
-                                />
-                              </div>
-                            ) : null;
-                          })()}
-                        </div>
-                      </div>
-                    ))}
-                    {(!editingItem.transportSegments || editingItem.transportSegments.length === 0) && (
-                      <button onClick={()=>setEditingItem({...editingItem,transportSegments:[emptySegment()]})} className="w-full py-2 text-sm text-indigo-600 font-bold border border-dashed border-indigo-300 rounded-lg hover:bg-indigo-50">
-                        + 填入第一段交通細節
-                      </button>
-                    )}
-                  </div>
-
+                {isOptionalOpen && <div className="space-y-4 pt-1">
                   {/* 營業時間 */}
                   <div>
                     <label className="block text-xs font-bold text-slate-500 mb-1">營業時間</label>
@@ -1876,10 +2016,15 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                   </div>
 
                 </div>
-              )}
+                }
+              </>)}
 
               <div className="pt-2 pb-4">
-                <button onClick={()=>saveItineraryItem(editingItem)} disabled={!editingItem.title?.trim()} className="w-full py-3 bg-indigo-600 text-white font-bold rounded-xl shadow-md hover:bg-indigo-700 disabled:opacity-40">儲存行程</button>
+                <button onClick={()=>saveItineraryItem(editingItem)}
+                  disabled={editingItem.type==='transport'
+                    ? !(editingItem.transportSegments?.[0]?.mode?.trim())
+                    : !editingItem.title?.trim()}
+                  className="w-full py-3 bg-indigo-600 text-white font-bold rounded-xl shadow-md hover:bg-indigo-700 disabled:opacity-40">儲存行程</button>
               </div>
             </div>
           </div>
