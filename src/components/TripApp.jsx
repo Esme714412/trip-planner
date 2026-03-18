@@ -44,6 +44,22 @@ const C = {
 // ─── 常數 ─────────────────────────────────────────────────────────────────────
 const TRIP_ICONS  = [Plane, MapPin, Luggage, CameraIcon];
 
+// 交通工具 Emoji 對照（可依需求擴充）
+const TRANSPORT_EMOJI = {
+  '飛機': '✈️', '航班': '✈️',
+  '電車': '🚃', '捷運': '🚇', '地鐵': '🚇', '鐵路': '🚆', '新幹線': '🚄',
+  '巴士': '🚌', '公車': '🚌',
+  '船': '🚢', '渡輪': '⛴️',
+  '計程車': '🚕', '包車': '🚗', '自駕': '🚗',
+  '步行': '🚶', '徒步': '🚶',
+  '纜車': '🚡', '接駁': '🚐',
+};
+const getTransportEmoji = (mode) => {
+  if (!mode) return '🚌';
+  const match = Object.keys(TRANSPORT_EMOJI).find(k => mode.includes(k));
+  return match ? TRANSPORT_EMOJI[match] : '🚌';
+};
+
 
 // ─── Utils ────────────────────────────────────────────────────────────────────
 function getDatesInRange(start, end) {
@@ -89,7 +105,18 @@ const MOCK_DATA = {
     { id: '3', text: '換日幣', checked: false },
   ],
   itinerary: [
-    { id: 'a', date: '2025-05-01', time: '09:00', type: 'place', title: '關西國際機場', location: '大阪府泉佐野市', notes: '入境後換 IC 卡', shoppingList: [], hours: '', tickets: '', website: '' },
+    { id: 'a', date: '2025-05-01', time: '09:00', type: 'place', title: '關西國際機場', location: '大阪府泉佐野市', notes: '入境後換 IC 卡', shoppingList: [], hours: '24hr', tickets: '', website: '' },
+    {
+      id: 'tr1', date: '2025-05-01', time: '11:30', type: 'transport',
+      transportMode: '電車',       // 交通工具種類
+      from: '關西空港',             // 出發地
+      to: '難波',                   // 抵達地
+      duration: '40 分鐘',          // 行駛時間
+      title: '南海電鐵空港急行',    // 列車/班次名稱
+      notes: '搭乘南海電鐵空港急行，在難波站下車',
+      hours: '11:30', tickets: 'JPY 920', website: 'https://www.nankai.co.jp',
+      location: '難波',
+    },
     { id: 'b', date: '2025-05-01', time: '14:00', type: 'place', title: '道頓堀', location: '大阪市中央區', notes: '吃章魚燒', shoppingList: [{ id: 's1', text: '章魚燒伴手禮', checked: false }], hours: '全天', tickets: '', website: '' },
   ],
   expenses: [
@@ -219,19 +246,50 @@ export default function TripApp({ initialData = MOCK_DATA, readOnly = false, onB
   };
   React.useEffect(() => { if (sheetOpen) setTimeout(() => sheetInputRef.current?.focus(), 80); }, [sheetOpen]);
 
-  // ─── Quick-add expense from itinerary card ────────────────────────────────
-  const [linkedExpSheet, setLinkedExpSheet] = useState(null); // {itineraryId, title}
-  const [linkedExpAmt, setLinkedExpAmt] = useState('');
-  const [linkedExpCur, setLinkedExpCur] = useState(baseCurrency);
-  const [linkedExpPaidBy, setLinkedExpPaidBy] = useState(users[0]||'');
-  const openLinkedExp = (item) => {
-    setLinkedExpSheet({itineraryId: item.id, title: item.title});
-    setLinkedExpAmt('');
-    setLinkedExpCur(baseCurrency);
-    setLinkedExpPaidBy(users[0]||'');
-    setMode('finance'); // 跳到記帳 tab
-    showToast(`記帳：${item.title}`);
+  // ─── Expense Quick-add Sheet（從行程卡片觸發）────────────────────────────────
+  const [expSheet, setExpSheet]         = useState(null); // {itineraryId, title}
+  const [expSheetTitle, setExpSheetTitle] = useState('');
+  const [expSheetAmt, setExpSheetAmt]   = useState('');
+  const [expSheetCur, setExpSheetCur]   = useState(baseCurrency);
+  const [expSheetCat, setExpSheetCat]   = useState('飲食');
+  const [expSheetPaidBy, setExpSheetPaidBy] = useState('');
+  const [expSheetSplit, setExpSheetSplit]   = useState([]);
+  const expSheetAmtRef = React.useRef(null);
+
+  const openExpSheet = (item) => {
+    setExpSheet({itineraryId: item.id, sourceTitle: item.title});
+    setExpSheetTitle('');
+    setExpSheetAmt('');
+    setExpSheetCur(baseCurrency);
+    setExpSheetCat(item.type==='transport' ? '交通' : '飲食');
+    setExpSheetPaidBy(users[0]||'');
+    setExpSheetSplit([...users]);
   };
+  React.useEffect(() => {
+    if (expSheet) setTimeout(() => expSheetAmtRef.current?.focus(), 100);
+  }, [expSheet]);
+
+  const submitExpSheet = () => {
+    if (!expSheetAmt || parseFloat(expSheetAmt)<=0) return;
+    const newExp = {
+      id: crypto.randomUUID(),
+      itineraryId: expSheet.itineraryId,
+      title: expSheetTitle.trim() || expSheet.sourceTitle,
+      amount: parseFloat(expSheetAmt),
+      currency: expSheetCur,
+      category: expSheetCat,
+      paidBy: expSheetPaidBy,
+      splitWith: expSheetSplit.length>0 ? expSheetSplit : [expSheetPaidBy],
+      date: currentDate || new Date().toISOString().split('T')[0],
+    };
+    setExpenses(list => [...list, newExp]);
+    setExpSheet(null);
+    showToast('已記帳 ✓');
+  };
+
+  const toggleSplitUser = (u) => setExpSheetSplit(prev =>
+    prev.includes(u) ? prev.filter(x=>x!==u) : [...prev, u]
+  );
 
   // ─── Online state ─────────────────────────────────────────────────────────
   const [isOnline, setIsOnline] = React.useState(navigator.onLine);
@@ -557,76 +615,84 @@ export default function TripApp({ initialData = MOCK_DATA, readOnly = false, onB
                   return (
                     <div key={item.id} className="mb-3">
                       {isTransport ? (
-                        /* 交通 */
+                        /* 交通卡片 */
                         <div className="rounded-2xl border overflow-hidden"
-                          style={{background:'#F8FAFD', borderColor:C.primary+'55', boxShadow:C.cardShadow}}>
-                          {/* 主列 */}
-                          <div className="flex items-center gap-3 px-4 py-3">
-                            <div className="w-8 h-8 rounded-xl flex items-center justify-center shrink-0"
-                              style={{background:C.primaryLight, color:C.primary}}>
-                              <Car size={15}/>
+                          style={{background:'#F8FAFD', borderColor:C.primary+'44', boxShadow:C.cardShadow}}>
+
+                          {/* ── 收合列：工具emoji + 時間 + 起訖 ── */}
+                          <button className="w-full flex items-center gap-3 px-4 py-3 text-left"
+                            onClick={()=>toggleExpanded(item.id)}>
+                            {/* 交通工具 emoji */}
+                            <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0 text-lg"
+                              style={{background:C.primaryLight}}>
+                              {getTransportEmoji(item.transportMode)}
                             </div>
                             <div className="flex-1 min-w-0">
-                              <p className="text-[11px] font-bold" style={{color:C.muted}}>{item.time}</p>
-                              <p className="text-sm font-black" style={{color:C.primary}}>{item.title||'交通'}</p>
-                              {item.notes && !expandedItems.has(item.id) && (
-                                <p className="text-xs truncate mt-0.5" style={{color:C.muted}}>{item.notes}</p>
+                              {/* 時間 */}
+                              <p className="text-[11px] font-bold mb-0.5" style={{color:C.muted}}>{item.time}{item.duration ? ` · ${item.duration}` : ''}</p>
+                              {/* 起訖站：FROM → TO */}
+                              {(item.from || item.to) ? (
+                                <div className="flex items-center gap-1.5">
+                                  <span className="text-sm font-black truncate" style={{color:C.ink, maxWidth:'35%'}}>{item.from||'—'}</span>
+                                  <ArrowRight size={13} style={{color:C.primary, flexShrink:0}}/>
+                                  <span className="text-sm font-black truncate" style={{color:C.ink, maxWidth:'35%'}}>{item.to||'—'}</span>
+                                </div>
+                              ) : (
+                                <p className="text-sm font-black" style={{color:C.ink}}>{item.title||'交通'}</p>
+                              )}
+                              {/* 班次 / 列車名（副標） */}
+                              {item.title && (item.from || item.to) && (
+                                <p className="text-xs mt-0.5 truncate" style={{color:C.muted}}>{item.title}</p>
                               )}
                             </div>
-                            <button onClick={()=>toggleExpanded(item.id)} className="p-1 shrink-0" style={{color:C.primary}}>
-                              {expandedItems.has(item.id)?<ChevronUp size={15}/>:<ChevronDown size={15}/>}
-                            </button>
-                          </div>
-                          {/* 展開詳情 */}
+                            <span style={{color:C.primary, flexShrink:0}}>
+                              {expandedItems.has(item.id) ? <ChevronUp size={15}/> : <ChevronDown size={15}/>}
+                            </span>
+                          </button>
+
+                          {/* ── 展開詳情 ── */}
                           {expandedItems.has(item.id) && (
-                            <div className="px-4 pb-3 space-y-2" style={{borderTop:`1px solid ${C.primary}22`}}>
-                              <div className="pt-3 space-y-2">
-                                {item.location && (
-                                  <a href={`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(item.location)}`}
-                                    target="_blank" rel="noreferrer"
-                                    className="flex items-center gap-1.5 text-xs font-medium hover:underline"
-                                    style={{color:C.primary}}>
-                                    <Navigation size={12}/>前往：{item.location}
-                                  </a>
-                                )}
-                                {item.notes && (
-                                  <p className="text-xs leading-relaxed" style={{color:C.body}}>{item.notes}</p>
-                                )}
-                                {item.hours && (
-                                  <p className="text-xs flex items-center gap-1.5" style={{color:C.muted}}>
-                                    <Clock size={12}/>出發時間：{item.hours}
-                                  </p>
-                                )}
-                                {item.tickets && (
-                                  <p className="text-xs flex items-center gap-1.5" style={{color:C.muted}}>
-                                    <Ticket size={12}/>票價：{item.tickets}
-                                  </p>
-                                )}
-                                {item.website && (
-                                  <a href={item.website} target="_blank" rel="noreferrer"
-                                    className="text-xs flex items-center gap-1.5 hover:underline" style={{color:C.primary}}>
-                                    <Globe size={12}/>訂票 / 購票連結
-                                  </a>
-                                )}
-                              </div>
+                            <div className="px-4 pt-3 pb-3 space-y-2" style={{borderTop:`1px solid ${C.primary}22`}}>
+                              {item.notes && (
+                                <p className="text-xs leading-relaxed" style={{color:C.body}}>{item.notes}</p>
+                              )}
+                              {item.tickets && (
+                                <p className="text-xs flex items-center gap-1.5" style={{color:C.muted}}>
+                                  <Ticket size={12}/>票價：{item.tickets}
+                                </p>
+                              )}
+                              {item.location && (
+                                <a href={`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(item.location)}`}
+                                  target="_blank" rel="noreferrer"
+                                  className="flex items-center gap-1.5 text-xs font-medium hover:underline"
+                                  style={{color:C.primary}}>
+                                  <Navigation size={12}/>在地圖查看路線
+                                </a>
+                              )}
+                              {item.website && (
+                                <a href={item.website} target="_blank" rel="noreferrer"
+                                  className="text-xs flex items-center gap-1.5 hover:underline" style={{color:C.primary}}>
+                                  <Globe size={12}/>訂票 / 購票連結
+                                </a>
+                              )}
                               {/* 動作列 */}
                               <div className="flex gap-2 pt-1">
                                 {!readOnly && (
-                                  <button onClick={()=>showToast('記帳功能待接入')}
+                                  <button onClick={()=>openExpSheet(item)}
                                     className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-xl text-xs font-bold"
-                                    style={{background:'rgba(72,116,158,0.08)', color:C.primary}}>
+                                    style={{background:C.primaryLight, color:C.primary}}>
                                     <DollarSign size={13}/>記一筆
                                   </button>
                                 )}
                                 {!readOnly && isEditMode && (
                                   <>
                                     <button onClick={()=>showToast('編輯待接入')}
-                                      className="flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold"
-                                      style={{background:C.primaryLight, color:C.primary}}>
+                                      className="flex items-center justify-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold"
+                                      style={{background:'#EEF2F6', color:C.body}}>
                                       <Edit2 size={13}/>編輯
                                     </button>
                                     <button onClick={()=>setItinerary(list=>list.filter(i=>i.id!==item.id))}
-                                      className="flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold"
+                                      className="flex items-center justify-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold"
                                       style={{background:C.dangerLight, color:C.danger}}>
                                       <Trash2 size={13}/>刪除
                                     </button>
@@ -674,7 +740,7 @@ export default function TripApp({ initialData = MOCK_DATA, readOnly = false, onB
                           </div>
                           <div className="flex" style={{borderTop:`1px solid ${C.border}`}}>
                             {!readOnly && (
-                              <button onClick={()=>openLinkedExp(item)}
+                              <button onClick={()=>openExpSheet(item)}
                                 className="flex-1 flex items-center justify-center gap-1.5 py-2.5 text-xs font-bold active:opacity-70"
                                 style={{color:C.primary}}>
                                 <DollarSign size={14}/>記一筆
@@ -978,7 +1044,7 @@ export default function TripApp({ initialData = MOCK_DATA, readOnly = false, onB
 
       {/* ══ CHECKLIST SHEET ══ */}
       {sheetOpen && (
-        <div className="fixed inset-0 z-[60] flex flex-col justify-end" style={{maxWidth:'448px',left:'50%',transform:'translateX(-50%)'}}>
+        <div className="fixed inset-0 z-[60] flex flex-col justify-end">
           {/* 半透明遮罩 */}
           <div className="absolute inset-0" style={{background:'rgba(0,0,0,0.25)'}} onClick={()=>setSheetOpen(false)}/>
           {/* Sheet 本體 */}
@@ -1006,6 +1072,162 @@ export default function TripApp({ initialData = MOCK_DATA, readOnly = false, onB
                   <Plus size={20}/>
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ══ EXPENSE QUICK-ADD SHEET ══ */}
+      {expSheet && (
+        <div className="fixed inset-0 z-[70] flex flex-col justify-end">
+
+          {/* 遮罩 */}
+          <div className="absolute inset-0" style={{background:'rgba(0,0,0,0.35)'}}
+            onClick={()=>setExpSheet(null)}/>
+
+          {/* Sheet 本體：max-height 限制 + flex 分層 */}
+          <div className="relative flex flex-col rounded-t-3xl"
+            style={{
+              background: C.card,
+              boxShadow: '0 -8px 40px rgba(0,0,0,0.18)',
+              maxHeight: '88dvh',   // 最多佔螢幕 88%
+            }}>
+
+            {/* ── 固定：把手 + 標題 ── */}
+            <div className="shrink-0 px-5 pt-3 pb-3"
+              style={{borderBottom:`1px solid ${C.border}`}}>
+              {/* 把手 */}
+              <div className="flex justify-center mb-3">
+                <div className="w-10 h-1 rounded-full" style={{background:C.border}}/>
+              </div>
+              {/* 標題 + 關閉 */}
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-base font-black" style={{color:C.ink}}>記一筆</p>
+                  <p className="text-xs mt-0.5" style={{color:C.muted}}>來自：{expSheet.sourceTitle}</p>
+                </div>
+                <button onClick={()=>setExpSheet(null)}
+                  className="w-8 h-8 flex items-center justify-center rounded-full"
+                  style={{background:'#F4F7FA', color:C.muted}}>
+                  <X size={16}/>
+                </button>
+              </div>
+            </div>
+
+            {/* ── 可捲動內容區 ── */}
+            <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4"
+              style={{WebkitOverflowScrolling:'touch'}}>
+
+              {/* 費用名稱 */}
+              <input
+                value={expSheetTitle}
+                onChange={e=>setExpSheetTitle(e.target.value)}
+                placeholder={`費用名稱（預設：${expSheet.sourceTitle}）`}
+                className="w-full border rounded-2xl px-4 py-3 text-sm"
+                style={{borderColor:C.border, color:C.ink}}/>
+
+              {/* 金額列：大字輸入 + 幣別並排 */}
+              <div className="rounded-2xl border p-4 space-y-3"
+                style={{borderColor: expSheetAmt ? C.primary : C.border,
+                        boxShadow: expSheetAmt ? `0 0 0 3px ${C.primary}18` : 'none',
+                        transition: 'border-color 0.15s, box-shadow 0.15s'}}>
+                <div className="flex items-center gap-3">
+                  <input
+                    ref={expSheetAmtRef}
+                    type="number"
+                    inputMode="decimal"
+                    value={expSheetAmt}
+                    onChange={e=>setExpSheetAmt(e.target.value)}
+                    placeholder="0"
+                    className="flex-1 text-3xl font-black bg-transparent"
+                    style={{color: expSheetAmt ? C.ink : C.muted, minWidth:0}}/>
+                  <select
+                    value={expSheetCur}
+                    onChange={e=>setExpSheetCur(e.target.value)}
+                    className="border rounded-xl px-3 py-2 text-sm font-bold shrink-0"
+                    style={{borderColor:C.border, color:C.body}}>
+                    {Object.keys(rates).map(c=><option key={c} value={c}>{c}</option>)}
+                  </select>
+                </div>
+                {/* 換算預覽（僅外幣） */}
+                {expSheetAmt>0 && expSheetCur!==baseCurrency && (
+                  <div className="flex items-center gap-2 pt-2"
+                    style={{borderTop:`1px solid ${C.border}`}}>
+                    <span className="text-xs" style={{color:C.muted}}>≈</span>
+                    <span className="text-sm font-black" style={{color:'#B6C9CF'}}>
+                      {baseCurrency} {Math.round(parseFloat(expSheetAmt||0)*(rates[expSheetCur]??1)).toLocaleString()}
+                    </span>
+                    <span className="text-xs ml-auto" style={{color:C.muted}}>
+                      1 {expSheetCur} = {rates[expSheetCur]} {baseCurrency}
+                    </span>
+                  </div>
+                )}
+              </div>
+
+              {/* 類別 */}
+              <div>
+                <p className="text-[11px] font-black uppercase tracking-widest mb-2" style={{color:C.muted}}>類別</p>
+                <div className="flex flex-wrap gap-2">
+                  {categories.map(cat=>(
+                    <button key={cat} onClick={()=>setExpSheetCat(cat)}
+                      className="px-3 py-1.5 rounded-full text-xs font-bold"
+                      style={expSheetCat===cat
+                        ? {background:C.primary, color:'#fff'}
+                        : {background:'#F4F7FA', color:C.body, border:`1px solid ${C.border}`}}>
+                      {cat}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* 誰付款 */}
+              <div>
+                <p className="text-[11px] font-black uppercase tracking-widest mb-2" style={{color:C.muted}}>誰付款</p>
+                <div className="flex gap-2 flex-wrap">
+                  {users.map(u=>(
+                    <button key={u} onClick={()=>setExpSheetPaidBy(u)}
+                      className="px-4 py-2 rounded-xl text-sm font-bold"
+                      style={expSheetPaidBy===u
+                        ? {background:C.primary, color:'#fff'}
+                        : {background:'#F4F7FA', color:C.body, border:`1px solid ${C.border}`}}>
+                      {u}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* 分攤成員 */}
+              {users.length > 1 && (
+                <div>
+                  <p className="text-[11px] font-black uppercase tracking-widest mb-2" style={{color:C.muted}}>分攤成員</p>
+                  <div className="flex gap-2 flex-wrap">
+                    {users.map(u=>(
+                      <button key={u} onClick={()=>toggleSplitUser(u)}
+                        className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-bold"
+                        style={expSheetSplit.includes(u)
+                          ? {background:C.primaryLight, color:C.primary, border:`1.5px solid ${C.primary}`}
+                          : {background:'#F4F7FA', color:C.muted, border:`1px solid ${C.border}`}}>
+                        {expSheetSplit.includes(u) && <Check size={12}/>}
+                        {u}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* ── 固定：送出按鈕（不隨內容捲動）── */}
+            <div className="shrink-0 px-5 pt-3 pb-8"
+              style={{borderTop:`1px solid ${C.border}`}}>
+              <button onClick={submitExpSheet}
+                className="w-full py-3.5 rounded-2xl text-sm font-black text-white"
+                style={{
+                  background: (expSheetAmt && parseFloat(expSheetAmt)>0 && expSheetPaidBy)
+                    ? C.primary : C.muted,
+                  transition: 'background 0.15s',
+                }}>
+                記帳完成
+              </button>
             </div>
           </div>
         </div>
