@@ -282,12 +282,14 @@ export default function TripApp({ initialData = MOCK_DATA, readOnly = false, onB
 
   const openExpSheet = (item) => {
     setExpSheet({itineraryId: item.id, sourceTitle: item.title});
-    setExpSheetTitle('');
+    setExpSheetTitle(item.title || '');   // 預設帶入 title，可改名
     setExpSheetAmt('');
     setExpSheetCur(baseCurrency);
     setExpSheetCat(item.type==='transport' ? '交通' : '飲食');
     setExpSheetPaidBy(users[0]||'');
     setExpSheetSplit([...users]);
+    setSplitMode('equal');
+    setCustomAmounts({});
   };
   React.useEffect(() => {
     if (expSheet) setTimeout(() => expSheetAmtRef.current?.focus(), 100);
@@ -1198,37 +1200,38 @@ export default function TripApp({ initialData = MOCK_DATA, readOnly = false, onB
             {/* 可捲動費用區 */}
             <div className="scroll-area flex-1 pb-28 px-4 space-y-4">
 
-              {/* 建議結算：口語化，只列需要付款的人 */}
+              {/* 分帳結果：每筆一行，橘色欠款人 → 藍色收款人，右側金額 */}
               {settlement.length > 0 && (
-                <div className="rounded-2xl border overflow-hidden" style={{background:C.card, borderColor:C.border, boxShadow:C.cardShadow}}>
-                  <div className="px-4 py-3 border-b" style={{borderColor:C.border}}>
-                    <p className="text-[11px] font-black uppercase tracking-widest" style={{color:C.muted}}>費用結算</p>
+                <div className="rounded-2xl overflow-hidden" style={{background:C.card, boxShadow:C.cardShadow, border:`1px solid ${C.border}`}}>
+                  <div className="px-4 pt-3 pb-1">
+                    <p className="text-[11px] font-black uppercase tracking-widest" style={{color:C.muted}}>分帳結果</p>
                   </div>
-                  <div className="px-4 py-3 space-y-2.5">
+                  <div className="px-3 pb-3 space-y-2">
                     {settlement.map((t, i) => (
-                      <div key={i} className="rounded-2xl px-4 py-3" style={{background:'#F4F8FC'}}>
-                        {/* 句子：「小明 需要付給 小花」 */}
-                        <div className="flex items-center gap-1.5 mb-1.5 flex-wrap">
-                          <span className="text-sm font-black" style={{color:C.ink}}>{t.from}</span>
-                          <span className="text-xs font-medium" style={{color:C.muted}}>需要付給</span>
-                          <span className="text-sm font-black" style={{color:C.primary}}>{t.to}</span>
-                        </div>
-                        {/* 金額 */}
-                        <p className="text-xl font-black tracking-tight" style={{color:C.ink}}>
-                          {baseCurrency} {t.amount.toLocaleString()}
-                        </p>
+                      <div key={i}
+                        className="flex items-center px-4 py-3.5 rounded-2xl"
+                        style={{background:'#F4F8FC'}}>
+                        {/* 欠款人（橘） */}
+                        <span className="text-sm font-black" style={{color:C.warning}}>{t.from}</span>
+                        {/* 箭頭 */}
+                        <ArrowRight size={14} className="mx-2 shrink-0" style={{color:C.muted}}/>
+                        {/* 收款人（藍） */}
+                        <span className="text-sm font-black" style={{color:C.primary}}>{t.to}</span>
+                        {/* 金額（右對齊） */}
+                        <span className="ml-auto text-sm font-black tracking-tight" style={{color:C.primaryDark}}>
+                          {baseCurrency} {Math.round(t.amount).toLocaleString()}
+                        </span>
                       </div>
                     ))}
-                    {/* 已結清的人不列出 */}
-                    {users.filter(u => {
-                      const s = financeSummary.userStats[u];
-                      return s && Math.abs(s.paid - s.consumed) < 1;
-                    }).length > 0 && (
-                      <p className="text-xs text-center pt-1" style={{color:C.muted}}>
-                        其餘成員已結清
-                      </p>
-                    )}
                   </div>
+                </div>
+              )}
+              {/* 全員結清提示 */}
+              {settlement.length === 0 && expenses.length > 0 && (
+                <div className="rounded-2xl px-4 py-3.5 flex items-center gap-2"
+                  style={{background:C.card, border:`1px solid ${C.border}`, boxShadow:C.cardShadow}}>
+                  <Check size={15} style={{color:'#4ade80'}}/>
+                  <span className="text-sm font-bold" style={{color:C.muted}}>所有費用已結清</span>
                 </div>
               )}
 
@@ -1257,44 +1260,161 @@ export default function TripApp({ initialData = MOCK_DATA, readOnly = false, onB
                         <div key={exp.id} className="px-4 py-4" style={{borderBottom:idx<arr.length-1?`1px solid ${C.border}`:'none'}}>
                           {isEditing ? (
                             /* 編輯模式 */
-                            <div className="space-y-2">
-                              <input value={editingExpData.title||''} onChange={e=>setEditingExpData(d=>({...d,title:e.target.value}))}
-                                placeholder="名稱" className="w-full border rounded-xl px-3 py-2 text-sm font-bold"
-                                style={{borderColor:C.primary, color:C.ink}}/>
-                              <div className="flex gap-2">
-                                <input type="number" value={editingExpData.amount||''} onChange={e=>setEditingExpData(d=>({...d,amount:parseFloat(e.target.value)||0}))}
-                                  placeholder="金額" className="flex-1 border rounded-xl px-3 py-2 text-sm"
-                                  style={{borderColor:C.border, color:C.ink}}/>
-                                <select value={editingExpData.currency||baseCurrency} onChange={e=>setEditingExpData(d=>({...d,currency:e.target.value}))}
-                                  className="border rounded-xl px-2 py-2 text-sm" style={{borderColor:C.border, color:C.body}}>
-                                  {Object.keys(rates).map(c=><option key={c} value={c}>{c}</option>)}
-                                </select>
-                              </div>
-                              {/* 即時換算預覽 */}
-                              {editingExpData.amount>0 && editingExpData.currency && editingExpData.currency!==baseCurrency && (
-                                <div className="flex items-center gap-2 px-3 py-2 rounded-xl"
-                                  style={{background:'#F0F5F9'}}>
-                                  <span className="text-xs" style={{color:C.muted}}>≈</span>
-                                  <span className="text-sm font-black" style={{color:'#B6C9CF'}}>
-                                    {baseCurrency} {Math.round(editingExpData.amount*(rates[editingExpData.currency]??1)).toLocaleString()}
-                                  </span>
-                                  <span className="text-xs ml-auto" style={{color:C.muted}}>
-                                    1 {editingExpData.currency} = {rates[editingExpData.currency]??'?'} {baseCurrency}
-                                  </span>
+                            (() => {
+                              const ed = editingExpData;
+                              const setEd = (f, v) => setEditingExpData(d => ({...d, [f]: v}));
+                              const edSplitMode = ed.splitMode || 'equal';
+                              const edCustom = ed.customAmounts || {};
+                              const edSplit = ed.splitWith || users;
+                              return (
+                                <div className="space-y-3 py-1">
+                                  {/* 名稱 */}
+                                  <input value={ed.title||''} onChange={e=>setEd('title',e.target.value)}
+                                    placeholder="費用名稱"
+                                    className="w-full border rounded-xl px-3 py-2.5 text-sm font-bold"
+                                    style={{borderColor:C.primary+'66', color:C.ink}}/>
+
+                                  {/* 金額 + 幣別 */}
+                                  <div className="flex gap-2">
+                                    <input type="number" value={ed.amount||''} onChange={e=>setEd('amount',parseFloat(e.target.value)||0)}
+                                      placeholder="金額" className="flex-1 border rounded-xl px-3 py-2 text-sm"
+                                      style={{borderColor:C.border, color:C.ink}}/>
+                                    <select value={ed.currency||baseCurrency} onChange={e=>setEd('currency',e.target.value)}
+                                      className="border rounded-xl px-2 py-2 text-sm" style={{borderColor:C.border, color:C.body}}>
+                                      {Object.keys(rates).map(c=><option key={c} value={c}>{c}</option>)}
+                                    </select>
+                                  </div>
+                                  {ed.amount>0 && ed.currency && ed.currency!==baseCurrency && (
+                                    <div className="flex items-center gap-2 px-3 py-2 rounded-xl" style={{background:'#F0F5F9'}}>
+                                      <span className="text-xs" style={{color:C.muted}}>≈</span>
+                                      <span className="text-sm font-black" style={{color:'#B6C9CF'}}>
+                                        {baseCurrency} {Math.round(ed.amount*(rates[ed.currency]??1)).toLocaleString()}
+                                      </span>
+                                      <span className="text-xs ml-auto" style={{color:C.muted}}>
+                                        1 {ed.currency} = {rates[ed.currency]??'?'} {baseCurrency}
+                                      </span>
+                                    </div>
+                                  )}
+
+                                  {/* 付款人 */}
+                                  <div>
+                                    <p className="text-[10px] font-black uppercase tracking-widest mb-1.5" style={{color:C.muted}}>誰付款</p>
+                                    <div className="flex gap-2 flex-wrap">
+                                      {users.map(u=>(
+                                        <button key={u} onClick={()=>setEd('paidBy',u)}
+                                          className="px-3 py-1.5 rounded-xl text-xs font-bold"
+                                          style={ed.paidBy===u
+                                            ? {background:C.primary, color:'#fff'}
+                                            : {background:'#F4F7FA', color:C.body, border:`1px solid ${C.border}`}}>
+                                          {u}
+                                        </button>
+                                      ))}
+                                    </div>
+                                  </div>
+
+                                  {/* 分攤方式 */}
+                                  {users.length > 1 && (
+                                    <div>
+                                      <p className="text-[10px] font-black uppercase tracking-widest mb-1.5" style={{color:C.muted}}>分攤方式</p>
+                                      <div className="flex gap-2 mb-2">
+                                        {[['equal','平分'],['custom','自訂'],['self','各付各的']].map(([m,label])=>(
+                                          <button key={m} onClick={()=>{
+                                            setEd('splitMode', m);
+                                            if (m==='equal') setEd('splitWith', [...users]);
+                                            else if (m==='self') setEd('splitWith', [ed.paidBy||users[0]]);
+                                          }}
+                                            className="flex-1 py-1.5 rounded-xl text-xs font-black"
+                                            style={edSplitMode===m
+                                              ? {background:C.primary, color:'#fff'}
+                                              : {background:'#F4F7FA', color:C.muted, border:`1px solid ${C.border}`}}>
+                                            {label}
+                                          </button>
+                                        ))}
+                                      </div>
+
+                                      {/* 平分：每人金額預覽 */}
+                                      {edSplitMode==='equal' && ed.amount>0 && (
+                                        <p className="text-xs mb-2" style={{color:C.muted}}>
+                                          每人 {ed.currency||baseCurrency} {(ed.amount/users.length).toFixed(0)}
+                                        </p>
+                                      )}
+
+                                      {/* 自訂 */}
+                                      {edSplitMode==='custom' && (
+                                        <div className="space-y-1.5 mb-2">
+                                          {users.map(u=>(
+                                            <div key={u} className="flex items-center gap-2">
+                                              <span className="text-xs font-bold w-14 shrink-0" style={{color:C.ink}}>{u}</span>
+                                              <input type="number" inputMode="decimal"
+                                                value={edCustom[u]||''}
+                                                onChange={e=>setEd('customAmounts',{...edCustom,[u]:e.target.value})}
+                                                placeholder="0"
+                                                className="flex-1 border rounded-xl px-2.5 py-1.5 text-xs"
+                                                style={{borderColor:C.border, color:C.ink}}/>
+                                              <span className="text-xs shrink-0" style={{color:C.muted}}>{ed.currency||baseCurrency}</span>
+                                            </div>
+                                          ))}
+                                        </div>
+                                      )}
+
+                                      {/* 各付各的：勾選參與者 */}
+                                      {edSplitMode==='self' && (
+                                        <div className="flex gap-2 flex-wrap">
+                                          {users.map(u=>(
+                                            <button key={u} onClick={()=>{
+                                              const cur = edSplit.includes(u)
+                                                ? edSplit.filter(x=>x!==u)
+                                                : [...edSplit, u];
+                                              setEd('splitWith', cur.length>0 ? cur : [u]);
+                                            }}
+                                              className="flex items-center gap-1 px-3 py-1.5 rounded-xl text-xs font-bold"
+                                              style={edSplit.includes(u)
+                                                ? {background:C.primaryLight, color:C.primary, border:`1.5px solid ${C.primary}`}
+                                                : {background:'#F4F7FA', color:C.muted, border:`1px solid ${C.border}`}}>
+                                              {edSplit.includes(u) && <Check size={11}/>}
+                                              {u}
+                                            </button>
+                                          ))}
+                                        </div>
+                                      )}
+
+                                      {/* 平分參與者顯示 */}
+                                      {edSplitMode==='equal' && (
+                                        <div className="flex gap-2 flex-wrap">
+                                          {users.map(u=>(
+                                            <button key={u} onClick={()=>{
+                                              const cur = edSplit.includes(u)
+                                                ? edSplit.filter(x=>x!==u)
+                                                : [...edSplit, u];
+                                              setEd('splitWith', cur.length>0 ? cur : [u]);
+                                            }}
+                                              className="flex items-center gap-1 px-3 py-1.5 rounded-xl text-xs font-bold"
+                                              style={edSplit.includes(u)
+                                                ? {background:C.primaryLight, color:C.primary, border:`1.5px solid ${C.primary}`}
+                                                : {background:'#F4F7FA', color:C.muted, border:`1px solid ${C.border}`}}>
+                                              {edSplit.includes(u) && <Check size={11}/>}
+                                              {u}
+                                            </button>
+                                          ))}
+                                        </div>
+                                      )}
+                                    </div>
+                                  )}
+
+                                  {/* 按鈕：取消 + 儲存（主要），刪除（次要小字在最下） */}
+                                  <div className="flex gap-2">
+                                    <button onClick={()=>setEditingExpId(null)} className="flex-1 py-2.5 rounded-xl text-sm font-bold" style={{background:'#F4F7FA', color:C.muted}}>取消</button>
+                                    <button onClick={saveEditExp} className="flex-1 py-2.5 rounded-xl text-sm font-black text-white" style={{background:C.primary}}>儲存</button>
+                                  </div>
+                                  <button onClick={()=>{
+                                    if(window.confirm('確定要刪除這筆費用嗎？')) deleteExp(ed.id);
+                                  }} className="w-full py-2 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5"
+                                    style={{background:'transparent', color:C.danger}}>
+                                    <Trash2 size={13}/>刪除這筆費用
+                                  </button>
                                 </div>
-                              )}
-                              {/* 刪除：放在編輯表單最底，需二次確認 */}
-                              <button onClick={()=>{
-                                if(window.confirm('確定要刪除這筆費用嗎？')) deleteExp(editingExpData.id);
-                              }} className="w-full py-2 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5"
-                                style={{background:C.dangerLight, color:C.danger}}>
-                                <Trash2 size={13}/>刪除這筆費用
-                              </button>
-                              <div className="flex gap-2">
-                                <button onClick={()=>setEditingExpId(null)} className="flex-1 py-2 rounded-xl text-sm font-bold" style={{background:'#F4F7FA', color:C.muted}}>取消</button>
-                                <button onClick={saveEditExp} className="flex-1 py-2 rounded-xl text-sm font-bold text-white" style={{background:C.primary}}>儲存</button>
-                              </div>
-                            </div>
+                              );
+                            })()
                           ) : (
                             /* 顯示模式 */
                             <div>
@@ -1419,19 +1539,11 @@ export default function TripApp({ initialData = MOCK_DATA, readOnly = false, onB
                       : (detailData.title||detailSheet.title)}
                   </p>
                 </div>
-                <div className="flex items-center gap-2 shrink-0">
-                  <button
-                    onClick={saveDetailSheet}
-                    className="px-4 py-1.5 rounded-xl text-sm font-black"
-                    style={{background:C.primary, color:'#fff'}}>
-                    儲存
-                  </button>
-                  <button onClick={() => setDetailSheet(null)}
-                    className="w-8 h-8 flex items-center justify-center rounded-full"
-                    style={{background:'#F4F7FA', color:C.muted}}>
-                    <X size={16}/>
-                  </button>
-                </div>
+                <button onClick={() => setDetailSheet(null)}
+                  className="w-8 h-8 flex items-center justify-center rounded-full shrink-0"
+                  style={{background:'#F4F7FA', color:C.muted}}>
+                  <X size={16}/>
+                </button>
               </div>
             </div>
 
@@ -1579,14 +1691,20 @@ export default function TripApp({ initialData = MOCK_DATA, readOnly = false, onB
 
             </div>
 
-            {/* 固定底部：刪除按鈕 */}
+            {/* 固定底部：儲存（主要）+ 刪除（次要小字） */}
             {!readOnly && (
-              <div className="shrink-0 px-5 pt-3 pb-8" style={{borderTop:`1px solid ${C.border}`}}>
+              <div className="shrink-0 px-5 pt-3 pb-8 space-y-2" style={{borderTop:`1px solid ${C.border}`}}>
+                <button
+                  onClick={saveDetailSheet}
+                  className="w-full py-3.5 rounded-2xl text-sm font-black text-white"
+                  style={{background:C.primary}}>
+                  儲存
+                </button>
                 <button
                   onClick={deleteFromDetail}
-                  className="w-full py-3 rounded-2xl text-sm font-black flex items-center justify-center gap-2"
-                  style={{background:C.dangerLight, color:C.danger}}>
-                  <Trash2 size={15}/>刪除此行程
+                  className="w-full py-2 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5"
+                  style={{background:'transparent', color:C.danger}}>
+                  <Trash2 size={13}/>刪除此行程
                 </button>
               </div>
             )}
@@ -1655,10 +1773,7 @@ export default function TripApp({ initialData = MOCK_DATA, readOnly = false, onB
               </div>
               {/* 標題 + 關閉 */}
               <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-base font-black" style={{color:C.ink}}>記一筆</p>
-                  <p className="text-xs mt-0.5" style={{color:C.muted}}>來自：{expSheet.sourceTitle}</p>
-                </div>
+                <p className="text-base font-black" style={{color:C.ink}}>記一筆</p>
                 <button onClick={()=>setExpSheet(null)}
                   className="w-8 h-8 flex items-center justify-center rounded-full"
                   style={{background:'#F4F7FA', color:C.muted}}>
@@ -1675,9 +1790,9 @@ export default function TripApp({ initialData = MOCK_DATA, readOnly = false, onB
               <input
                 value={expSheetTitle}
                 onChange={e=>setExpSheetTitle(e.target.value)}
-                placeholder={`費用名稱（預設：${expSheet.sourceTitle}）`}
-                className="w-full border rounded-2xl px-4 py-3 text-sm"
-                style={{borderColor:C.border, color:C.ink}}/>
+                placeholder="費用名稱"
+                className="w-full border rounded-2xl px-4 py-3 text-sm font-medium"
+                style={{borderColor: expSheetTitle ? C.primary+'66' : C.border, color:C.ink}}/>
 
               {/* 金額列：大字輸入 + 幣別並排 */}
               <div className="rounded-2xl border p-4 space-y-3"
@@ -1770,10 +1885,11 @@ export default function TripApp({ initialData = MOCK_DATA, readOnly = false, onB
                     ))}
                   </div>
 
-                  {/* 平分：顯示每人金額 */}
-                  {splitMode==='equal' && expSheetAmt>0 && (
+                  {/* 平分：每人金額（依選中人數計算）*/}
+                  {splitMode==='equal' && expSheetAmt>0 && expSheetSplit.length>0 && (
                     <p className="text-xs mb-2" style={{color:C.muted}}>
-                      每人 {expSheetCur} {(parseFloat(expSheetAmt)/users.length).toFixed(0)}
+                      每人 {expSheetCur} {(parseFloat(expSheetAmt)/expSheetSplit.length).toFixed(0)}
+                      {expSheetSplit.length < users.length ? `（${expSheetSplit.length} 人分攤）` : ''}
                     </p>
                   )}
 
@@ -1811,17 +1927,22 @@ export default function TripApp({ initialData = MOCK_DATA, readOnly = false, onB
                     </div>
                   )}
 
-                  {/* 平分預設所有人都打勾（不顯示勾選介面，改用上方描述） */}
+                  {/* 平分：可選哪些人參與（實現墊付效果）*/}
                   {splitMode==='equal' && (
-                    <div className="flex gap-2 flex-wrap">
+                    <div className="flex gap-2 flex-wrap mt-1">
                       {users.map(u=>(
-                        <span key={u} className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold"
-                          style={{background:C.primaryLight, color:C.primary}}>
-                          <Check size={11}/>{u}
-                        </span>
+                        <button key={u} onClick={()=>toggleSplitUser(u)}
+                          className="flex items-center gap-1 px-3 py-1.5 rounded-xl text-xs font-bold"
+                          style={expSheetSplit.includes(u)
+                            ? {background:C.primaryLight, color:C.primary, border:`1.5px solid ${C.primary}`}
+                            : {background:'#F4F7FA', color:C.muted, border:`1px solid ${C.border}`}}>
+                          {expSheetSplit.includes(u) && <Check size={11}/>}
+                          {u}
+                        </button>
                       ))}
                     </div>
                   )}
+
                 </div>
               )}
             </div>
