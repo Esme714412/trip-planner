@@ -19,7 +19,7 @@ import {
   ListTodo, Calendar, Settings,
   Star, Plane, Luggage, Camera as CameraIcon,
   ArrowLeft, ArrowRight, Share2,
-  Wallet, Map, CheckSquare,
+  Wallet, Map, CheckSquare, MoreHorizontal,
 } from 'lucide-react';
 
 /* ── Design tokens ── */
@@ -147,8 +147,8 @@ export default function TripApp({ initialData = MOCK_DATA, readOnly = false, onB
   const [savedSpots,     setSavedSpots]     = useState(initialData.savedSpots    || []);
 
   // ── UI state ────────────────────────────────────────────────────────────────
-  const [mode,           setMode]           = useState('itinerary'); // 'checklist' | 'itinerary' | 'finance'
-  const [listTab,        setListTab]        = useState('pretrip');   // 'pretrip' | 'shopping' | 'spots'
+  const [mode,           setMode]           = useState('itinerary');
+  const [listTab,        setListTab]        = useState('pretrip');
   const [isEditMode,     setIsEditMode]     = useState(false);
   const [expandedItems,  setExpandedItems]  = useState(new Set());
   const [selectedDay,    setSelectedDay]    = useState(0);
@@ -158,6 +158,27 @@ export default function TripApp({ initialData = MOCK_DATA, readOnly = false, onB
   const [showDoneRegular,setShowDoneRegular]= useState(false);
   const [newChecklistItem, setNewChecklistItem] = useState('');
   const [toast,          setToast]          = useState('');
+  // inline 編輯表單資料（key = item.id）
+  const [inlineEdits,    setInlineEdits]    = useState({});
+  const setInlineField = (id, field, val) =>
+    setInlineEdits(prev => ({...prev, [id]: {...(prev[id]||{}), [field]: val}}));
+  // 編輯模式展開的卡片 id（點 ... 展開 inline 表單）
+  const [editExpandedId, setEditExpandedId] = useState(null);
+  const toggleEditExpand = (id) =>
+    setEditExpandedId(prev => prev === id ? null : id);
+  // 點選移動
+  const [movingItemId,   setMovingItemId]   = useState(null);
+  // 各天 section 的 ref，用於快速捲動
+  const dayRefs = React.useRef({});
+  const itineraryScrollRef = React.useRef(null);
+  // 卡片詳情 / 編輯 Sheet
+  const [detailSheet,    setDetailSheet]    = useState(null); // item object
+  const [detailEditing,  setDetailEditing]  = useState(false);
+  const [detailData,     setDetailData]     = useState({});
+  // 左滑刪除：記錄哪張卡片正在 swiped
+  const [swipedId,       setSwipedId]       = useState(null);
+  // FAB 展開狀態
+  const [fabOpen,        setFabOpen]        = useState(false);
 
   const TripIcon = TRIP_ICONS[tripIconIndex % TRIP_ICONS.length];
 
@@ -204,7 +225,10 @@ export default function TripApp({ initialData = MOCK_DATA, readOnly = false, onB
     setChecklist(list => [...list, { id: crypto.randomUUID(), text: newChecklistItem.trim(), checked: false }]);
     setNewChecklistItem('');
   };
-  const deleteChecklistItem = (id) => setChecklist(list => list.filter(i => i.id !== id));
+  const deleteChecklistItem = (id) => {
+    if (!window.confirm('確定要刪除這個清單項目嗎？')) return;
+    setChecklist(list => list.filter(i => i.id !== id));
+  };
   const toggleShop = (iId, sId) => setItinerary(list => list.map(i => i.id === iId
     ? { ...i, shoppingList: (i.shoppingList || []).map(s => s.id === sId ? { ...s, checked: !s.checked } : s) }
     : i));
@@ -271,6 +295,9 @@ export default function TripApp({ initialData = MOCK_DATA, readOnly = false, onB
 
   const submitExpSheet = () => {
     if (!expSheetAmt || parseFloat(expSheetAmt)<=0) return;
+    const splitWith = splitMode==='equal' ? [...users]
+      : splitMode==='self' ? expSheetSplit
+      : users; // custom 模式下 splitWith = 全部，金額另存
     const newExp = {
       id: crypto.randomUUID(),
       itineraryId: expSheet.itineraryId,
@@ -279,17 +306,110 @@ export default function TripApp({ initialData = MOCK_DATA, readOnly = false, onB
       currency: expSheetCur,
       category: expSheetCat,
       paidBy: expSheetPaidBy,
-      splitWith: expSheetSplit.length>0 ? expSheetSplit : [expSheetPaidBy],
+      splitWith: splitWith.length>0 ? splitWith : [expSheetPaidBy],
+      splitMode,
+      customAmounts: splitMode==='custom' ? {...customAmounts} : undefined,
       date: currentDate || new Date().toISOString().split('T')[0],
     };
     setExpenses(list => [...list, newExp]);
     setExpSheet(null);
+    setSplitMode('equal');
+    setCustomAmounts({});
     showToast('已記帳 ✓');
   };
 
   const toggleSplitUser = (u) => setExpSheetSplit(prev =>
     prev.includes(u) ? prev.filter(x=>x!==u) : [...prev, u]
   );
+
+  // 分攤模式：'equal'=平分 | 'custom'=自訂 | 'self'=各付各的
+  const [splitMode, setSplitMode] = useState('equal');
+  const [customAmounts, setCustomAmounts] = useState({});
+  const openExpSheetWithMode = (item) => {
+    openExpSheet(item);
+    setSplitMode('equal');
+    setCustomAmounts({});
+  };
+
+  // 左滑刪除：統一 swipe state（key=id, val=type）
+  const [swipeMap, setSwipeMap] = useState({});
+  const openSwipe = (id) => setSwipeMap(prev => ({...prev, [id]: true}));
+  const closeSwipe = (id) => setSwipeMap(prev => { const n={...prev}; delete n[id]; return n; });
+  const closeAllSwipe = () => setSwipeMap({});
+
+  // 清單項目編輯
+  const [editingCheckId, setEditingCheckId] = useState(null);
+  const [editingCheckText, setEditingCheckText] = useState('');
+  const startEditCheck = (item) => { setEditingCheckId(item.id); setEditingCheckText(item.text); };
+  const saveEditCheck = () => {
+    if (editingCheckText.trim()) {
+      setChecklist(list => list.map(i => i.id===editingCheckId ? {...i, text:editingCheckText.trim()} : i));
+    }
+    setEditingCheckId(null);
+  };
+
+  // ─── Detail sheet handlers ──────────────────────────────────────────────────
+  const openDetailSheet = (item) => {
+    setDetailSheet(item);
+    setDetailEditing(true);   // 點 ... 直接進入編輯
+    setDetailData({...item});
+    setSwipedId(null);
+    setEditExpandedId(null);
+  };
+  const saveDetailSheet = () => {
+    setItinerary(list => list.map(i => i.id === detailSheet.id ? {...detailData} : i));
+    setDetailSheet(null);
+    showToast('已儲存 ✓');
+  };
+  const deleteFromDetail = () => {
+    if (!window.confirm('確定要刪除這個行程嗎？')) return;
+    setItinerary(list => list.filter(i => i.id !== detailSheet.id));
+    setDetailSheet(null);
+    showToast('已刪除');
+  };
+
+  // ─── Move item logic ───────────────────────────────────────────────────────
+  const handleMoveTarget = (targetId, targetDate) => {
+    if (!movingItemId || movingItemId === targetId) { setMovingItemId(null); return; }
+    setItinerary(prev => {
+      const arr = [...prev];
+      const fromIdx = arr.findIndex(i => i.id === movingItemId);
+      if (fromIdx === -1) return prev;
+      // 更新日期為目標日期，插入到目標前面
+      const moved = { ...arr[fromIdx], date: targetDate };
+      arr.splice(fromIdx, 1);
+      const toIdx = arr.findIndex(i => i.id === targetId);
+      arr.splice(toIdx === -1 ? arr.length : toIdx, 0, moved);
+      return arr;
+    });
+    setMovingItemId(null);
+    showToast('已移動 ✓');
+  };
+  const handleMoveToDay = (targetDate) => {
+    // 移動到某天的最後
+    if (!movingItemId) return;
+    setItinerary(prev => {
+      const arr = [...prev];
+      const fromIdx = arr.findIndex(i => i.id === movingItemId);
+      if (fromIdx === -1) return prev;
+      const moved = { ...arr[fromIdx], date: targetDate };
+      arr.splice(fromIdx, 1);
+      // 找該天最後一個的後面插入
+      const lastOfDay = arr.reduce((acc, item, idx) => item.date === targetDate ? idx : acc, -1);
+      arr.splice(lastOfDay + 1, 0, moved);
+      return arr;
+    });
+    setMovingItemId(null);
+    showToast('已移動 ✓');
+  };
+  const scrollToDay = (date) => {
+    const el = dayRefs.current[date];
+    const container = itineraryScrollRef.current;
+    if (el && container) {
+      const offset = el.offsetTop - 8;
+      container.scrollTo({ top: offset, behavior: 'smooth' });
+    }
+  };
 
   // ─── Online state ─────────────────────────────────────────────────────────
   const [isOnline, setIsOnline] = React.useState(navigator.onLine);
@@ -337,6 +457,20 @@ export default function TripApp({ initialData = MOCK_DATA, readOnly = false, onB
         </div>
       )}
 
+      {/* 移動中提示 banner */}
+      {movingItemId && (
+        <div className="fixed top-0 inset-x-0 z-[90] flex items-center justify-between px-4 py-3"
+          style={{background:C.warning, maxWidth:'448px', left:'50%', transform:'translateX(-50%)'}}>
+          <p className="text-sm font-black text-white">
+            選擇要插入的位置或目標天
+          </p>
+          <button onClick={()=>setMovingItemId(null)}
+            className="text-white opacity-80 active:opacity-60">
+            <X size={18}/>
+          </button>
+        </div>
+      )}
+
       {/* ══ HEADER（固定，不捲動）══ */}
       <header className="shrink-0 border-b z-30" style={{background:C.card, borderColor:C.border}}>
         <div className="flex items-center gap-3 px-4 pt-11 pb-2">
@@ -369,6 +503,17 @@ export default function TripApp({ initialData = MOCK_DATA, readOnly = false, onB
             title={isOnline?'已連線':'離線中'}/>
           {!readOnly && (
             <>
+              {/* 行程 mode 才顯示編輯按鈕 */}
+              {mode==='itinerary' && (
+                <button
+                  onClick={()=>{ setIsEditMode(v=>!v); setMovingItemId(null); setFabOpen(false); setSwipedId(null); }}
+                  className="px-3 py-1.5 rounded-xl text-xs font-black transition-all"
+                  style={isEditMode
+                    ? {background:C.primary, color:'#fff'}
+                    : {background:C.primaryLight, color:C.primary}}>
+                  {isEditMode ? '完成' : '編輯'}
+                </button>
+              )}
               <button onClick={()=>showToast('分享功能待接入')} className="p-2 rounded-full active:opacity-60" style={{color:C.muted}}>
                 <Share2 size={19}/>
               </button>
@@ -447,13 +592,60 @@ export default function TripApp({ initialData = MOCK_DATA, readOnly = false, onB
                 <div>
                   {/* 未完成 */}
                   {checklist.filter(i=>!i.checked).map((item,idx,arr)=>(
-                    <div key={item.id} className="flex items-center gap-3 px-4 py-3.5"
-                      style={{borderBottom:`1px solid ${C.border}`}}>
-                      <button onClick={()=>toggleChecklist(item.id)}
-                        className="w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 active:scale-90 transition-transform"
-                        style={{borderColor:C.muted, background:'transparent'}}/>
-                      <span className="flex-1 text-sm font-medium" style={{color:C.ink}}>{item.text}</span>
-                      {!readOnly && <button onClick={()=>deleteChecklistItem(item.id)} className="p-1" style={{color:C.border}}><Trash2 size={14}/></button>}
+                    <div key={item.id} style={{borderBottom:`1px solid ${C.border}`, overflow:'hidden', position:'relative'}}>
+                      {/* 左滑刪除底層 */}
+                      <div className="absolute inset-y-0 right-0 flex items-center px-4"
+                        style={{background:C.danger, width:'80px', justifyContent:'center'}}>
+                        <Trash2 size={18} color="#fff"/>
+                      </div>
+                      {/* 主列（可左滑） */}
+                      <div className="flex items-center gap-3 px-4 py-3.5 bg-white"
+                        style={{
+                          transform: swipeMap[item.id] ? 'translateX(-80px)' : 'translateX(0)',
+                          transition: 'transform 0.2s ease',
+                          position:'relative', zIndex:1,
+                        }}
+                        onPointerDown={e => { e._sx = e.clientX; }}
+                        onPointerUp={e => {
+                          const dx = e.clientX - (e._sx||e.clientX);
+                          if (dx < -40) openSwipe(item.id);
+                          else if (dx > 10) closeSwipe(item.id);
+                        }}>
+                        <button onClick={()=>{ closeAllSwipe(); toggleChecklist(item.id); }}
+                          className="w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 active:scale-90 transition-transform"
+                          style={{borderColor:C.muted, background:'transparent'}}/>
+                        {editingCheckId===item.id ? (
+                          <input autoFocus value={editingCheckText}
+                            onChange={e=>setEditingCheckText(e.target.value)}
+                            onBlur={saveEditCheck}
+                            onKeyDown={e=>e.key==='Enter'&&saveEditCheck()}
+                            className="flex-1 text-sm font-medium border-b bg-transparent"
+                            style={{color:C.ink, borderColor:C.primary}}/>
+                        ) : (
+                          <span className="flex-1 text-sm font-medium" style={{color:C.ink}}
+                            onClick={()=>closeAllSwipe()}>
+                            {item.text}
+                          </span>
+                        )}
+                        {!readOnly && (
+                          <div className="flex items-center gap-0.5 shrink-0">
+                            <button onClick={()=>{ closeAllSwipe(); startEditCheck(item); }}
+                              className="p-1.5" style={{color:C.muted}}>
+                              <Edit2 size={13}/>
+                            </button>
+                            <button onClick={()=>{ closeSwipe(item.id); deleteChecklistItem(item.id); }}
+                              className="p-1.5" style={{color:swipeMap[item.id]?C.danger:C.border}}>
+                              <Trash2 size={13}/>
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                      {/* 滑開後點刪除觸發 */}
+                      {swipeMap[item.id] && (
+                        <button className="absolute inset-y-0 right-0 flex items-center justify-center"
+                          style={{width:'80px', zIndex:2}}
+                          onClick={()=>{ closeSwipe(item.id); deleteChecklistItem(item.id); }}/>
+                      )}
                     </div>
                   ))}
 
@@ -475,7 +667,16 @@ export default function TripApp({ initialData = MOCK_DATA, readOnly = false, onB
                             <Check size={11} color="#fff"/>
                           </button>
                           <span className="flex-1 text-sm line-through" style={{color:C.muted}}>{item.text}</span>
-                          {!readOnly && <button onClick={()=>deleteChecklistItem(item.id)} className="p-1" style={{color:C.border}}><Trash2 size={14}/></button>}
+                          {!readOnly && (
+                            <div className="flex items-center gap-0.5 shrink-0">
+                              <button onClick={()=>startEditCheck(item)} className="p-1.5" style={{color:C.muted}}>
+                                <Edit2 size={13}/>
+                              </button>
+                              <button onClick={()=>deleteChecklistItem(item.id)} className="p-1.5" style={{color:C.border}}>
+                                <Trash2 size={13}/>
+                              </button>
+                            </div>
+                          )}
                         </div>
                       ))}
                     </>
@@ -557,17 +758,30 @@ export default function TripApp({ initialData = MOCK_DATA, readOnly = false, onB
                     const dayNum = idx+1;
                     const dt = new Date(date);
                     const mmdd = `${dt.getMonth()+1}/${dt.getDate()}`;
+                    // 編輯模式：點日期 → 捲動到該 section；瀏覽模式：切換顯示天
+                    const handleDayClick = () => {
+                      if (isEditMode) { scrollToDay(date); setSelectedDay(idx); }
+                      else { setSelectedDay(idx); }
+                    };
+                    // 移動中：點日期 = 移到該天最後
+                    const handleDayClickMoving = () => { handleMoveToDay(date); };
                     return (
-                      <button key={date} onClick={()=>setSelectedDay(idx)}
+                      <button key={date}
+                        onClick={movingItemId ? handleDayClickMoving : handleDayClick}
                         className="flex-shrink-0 flex flex-col items-center rounded-2xl transition-all"
-                        style={active
-                          ? {background:C.primary,color:'#fff',padding:'7px 13px'}
-                          : {background:'#F4F7FA',color:C.body,border:`1px solid ${C.border}`,padding:'7px 13px'}}>
+                        style={movingItemId
+                          ? {background:C.warningLight, color:C.warning, border:`1.5px dashed ${C.warning}`, padding:'7px 13px'}
+                          : active
+                            ? {background:C.primary,color:'#fff',padding:'7px 13px'}
+                            : {background:'#F4F7FA',color:C.body,border:`1px solid ${C.border}`,padding:'7px 13px'}}>
                         <span className="text-[11px] font-black">Day {dayNum}</span>
                         <span className="text-xs font-medium opacity-80">{mmdd}</span>
-                        {today && (
+                        {today && !movingItemId && (
                           <span className="text-[9px] font-black mt-0.5"
                             style={{color:active?'rgba(255,255,255,0.85)':C.warning}}>今天</span>
+                        )}
+                        {movingItemId && (
+                          <span className="text-[9px] font-black mt-0.5" style={{color:C.warning}}>移到這天</span>
                         )}
                       </button>
                     );
@@ -577,259 +791,377 @@ export default function TripApp({ initialData = MOCK_DATA, readOnly = false, onB
             )}
 
             {/* 可捲動行程區 */}
-            <div className="scroll-area flex-1 pb-28">
-              <div className="px-4 pt-4 pb-4">
+            <div ref={itineraryScrollRef} className="scroll-area flex-1 pb-28">
 
-                {/* 當日 header */}
-                {currentDate && (
-                  <div className="flex items-start justify-between mb-4">
-                    <div>
-                      <p className="text-lg font-black" style={{color:C.ink, letterSpacing:'-0.02em'}}>{dayLabel(currentDate)}</p>
-                      {isToday(currentDate) && (
-                        <span className="inline-block text-[11px] font-black px-2 py-0.5 rounded-full mt-0.5"
-                          style={{background:C.warningLight, color:C.warning}}>今天</span>
+              {/* 無任何日期：放在 map 外面 */}
+              {sortedDates.length === 0 && (
+                <div className="text-center py-20 flex flex-col items-center gap-4" style={{color:C.muted}}>
+                  <Plane size={52} opacity={0.15}/>
+                  <p className="font-black text-base" style={{color:C.ink, letterSpacing:'-0.02em'}}>尚未新增任何行程</p>
+                  <p className="text-sm mt-1">先設定旅行日期，開始規劃吧</p>
+                </div>
+              )}
+
+              {/* 各天 section */}
+              {(isEditMode ? sortedDates : (currentDate ? [currentDate] : [])).map((dateKey, dateKeyIdx) => {
+                const accom      = accommodations.find(a => a.date === dateKey);
+                const shopItems  = itinerary.filter(i => i.date === dateKey && i.shoppingList?.length > 0);
+                const isLastDay  = dateKeyIdx === sortedDates.length - 1;
+                const dayItems   = itinerary.filter(i => i.date === dateKey);
+
+                return (
+                  <div key={dateKey} ref={el => { dayRefs.current[dateKey] = el; }} className="px-4 pt-4 pb-2">
+
+                    {/* ── 當日 header ── */}
+                    <div className="flex items-start justify-between mb-4">
+                      <div>
+                        <p className="text-lg font-black" style={{color:C.ink, letterSpacing:'-0.02em'}}>{dayLabel(dateKey)}</p>
+                        {isToday(dateKey) && (
+                          <span className="inline-block text-[11px] font-black px-2 py-0.5 rounded-full mt-0.5"
+                            style={{background:C.warningLight, color:C.warning}}>今天</span>
+                        )}
+                      </div>
+                      {accom && (
+                        <div className="flex items-center gap-2 px-3 py-2 rounded-xl border ml-2"
+                          style={{background:C.primaryLight, borderColor:C.primary+'33', maxWidth:'52%', flexShrink:0}}>
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={C.primary} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+                            <polyline points="9 22 9 12 15 12 15 22"/>
+                          </svg>
+                          <div className="min-w-0">
+                            <p className="text-[10px] font-bold" style={{color:C.primary, opacity:0.7}}>今晚住宿</p>
+                            <p className="text-xs font-black truncate" style={{color:C.primary}}>{accom.name}</p>
+                          </div>
+                          <button onClick={()=>showToast('導航待接入')} style={{color:C.primary, opacity:0.6}}>
+                            <Navigation size={12}/>
+                          </button>
+                        </div>
                       )}
                     </div>
-                    {/* 住宿 badge */}
-                    {todayAccom && (
-                      <div className="flex items-center gap-2 px-3 py-2 rounded-xl border ml-2"
-                        style={{background:C.primaryLight, borderColor:C.primary+'33', maxWidth:'52%', flexShrink:0}}>
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={C.primary} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                          <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/>
-                        </svg>
-                        <div className="min-w-0">
-                          <p className="text-[10px] font-bold" style={{color:C.primary, opacity:0.7}}>今晚住宿</p>
-                          <p className="text-xs font-black truncate" style={{color:C.primary}}>{todayAccom.name}</p>
-                        </div>
-                        <button onClick={()=>showToast('導航待接入')} style={{color:C.primary, opacity:0.6}}>
-                          <Navigation size={12}/>
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                )}
 
-                {/* 行程卡片 */}
-                {itinerary.filter(i=>i.date===currentDate).map(item=>{
-                  const isTransport = item.type==='transport';
-                  return (
-                    <div key={item.id} className="mb-3">
-                      {isTransport ? (
-                        /* 交通卡片 */
-                        <div className="rounded-2xl border overflow-hidden"
-                          style={{background:'#F8FAFD', borderColor:C.primary+'44', boxShadow:C.cardShadow}}>
+                    {/* ── 行程卡片列表 ── */}
+                    {dayItems.map(item => {
+                      const isTransport = item.type === 'transport';
+                      return (
+                        <div key={item.id} className="mb-3">
 
-                          {/* ── 收合列：工具emoji + 時間 + 起訖 ── */}
-                          <button className="w-full flex items-center gap-3 px-4 py-3 text-left"
-                            onClick={()=>toggleExpanded(item.id)}>
-                            {/* 交通工具 emoji */}
-                            <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0 text-lg"
-                              style={{background:C.primaryLight}}>
-                              {getTransportEmoji(item.transportMode)}
-                            </div>
-                            <div className="flex-1 min-w-0">
-                              {/* 時間 */}
-                              <p className="text-[11px] font-bold mb-0.5" style={{color:C.muted}}>{item.time}{item.duration ? ` · ${item.duration}` : ''}</p>
-                              {/* 起訖站：FROM → TO */}
-                              {(item.from || item.to) ? (
-                                <div className="flex items-center gap-1.5">
-                                  <span className="text-sm font-black truncate" style={{color:C.ink, maxWidth:'35%'}}>{item.from||'—'}</span>
-                                  <ArrowRight size={13} style={{color:C.primary, flexShrink:0}}/>
-                                  <span className="text-sm font-black truncate" style={{color:C.ink, maxWidth:'35%'}}>{item.to||'—'}</span>
+                          {isTransport ? (
+
+                            /* ══ 交通卡片 ══ */
+                            <div className="rounded-2xl border overflow-hidden"
+                              style={{
+                                background: '#F8FAFD',
+                                borderColor: (isEditMode && editExpandedId===item.id) ? C.primary : C.primary+'44',
+                                boxShadow: C.cardShadow,
+                                transition: 'border-color 0.15s',
+                              }}>
+
+                              {/* 主列：flex items-center 整體垂直置中 */}
+                              <div className="flex items-center gap-3 px-4 py-3">
+
+                                {/* 左欄：時間 + icon（恆常顯示），編輯模式額外加移動 handle */}
+                                <div className="flex items-center gap-1.5 shrink-0">
+                                  {isEditMode && (
+                                    <button
+                                      onClick={() => {
+                                        if (movingItemId === item.id) setMovingItemId(null);
+                                        else if (movingItemId) handleMoveTarget(item.id, dateKey);
+                                        else setMovingItemId(item.id);
+                                      }}
+                                      className="p-1 rounded-lg shrink-0"
+                                      style={{
+                                        color: movingItemId===item.id ? C.warning : movingItemId ? C.primary : C.muted,
+                                        background: movingItemId===item.id ? C.warningLight : 'transparent',
+                                      }}>
+                                      {movingItemId===item.id
+                                        ? <X size={14}/>
+                                        : movingItemId
+                                          ? <ArrowRight size={14}/>
+                                          : <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                                              <line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/>
+                                              <line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/>
+                                              <line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>
+                                            </svg>
+                                      }
+                                    </button>
+                                  )}
+                                  {/* 時間 + emoji icon：直排置中 */}
+                                  <div className="flex flex-col items-center" style={{width:'36px'}}>
+                                    <span className="text-[11px] font-black text-center leading-none mb-1.5"
+                                      style={{color:C.primary}}>{item.time}</span>
+                                    <div className="w-9 h-9 rounded-xl flex items-center justify-center text-lg shrink-0"
+                                      style={{background:C.primaryLight}}>
+                                      {getTransportEmoji(item.transportMode)}
+                                    </div>
+                                  </div>
                                 </div>
-                              ) : (
-                                <p className="text-sm font-black" style={{color:C.ink}}>{item.title||'交通'}</p>
-                              )}
-                              {/* 班次 / 列車名（副標） */}
-                              {item.title && (item.from || item.to) && (
-                                <p className="text-xs mt-0.5 truncate" style={{color:C.muted}}>{item.title}</p>
-                              )}
-                            </div>
-                            <span style={{color:C.primary, flexShrink:0}}>
-                              {expandedItems.has(item.id) ? <ChevronUp size={15}/> : <ChevronDown size={15}/>}
-                            </span>
-                          </button>
 
-                          {/* ── 展開詳情 ── */}
-                          {expandedItems.has(item.id) && (
-                            <div className="px-4 pt-3 pb-3 space-y-2" style={{borderTop:`1px solid ${C.primary}22`}}>
-                              {item.notes && (
-                                <p className="text-xs leading-relaxed" style={{color:C.body}}>{item.notes}</p>
-                              )}
-                              {item.tickets && (
-                                <p className="text-xs flex items-center gap-1.5" style={{color:C.muted}}>
-                                  <Ticket size={12}/>票價：{item.tickets}
-                                </p>
-                              )}
-                              {item.location && (
-                                <a href={`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(item.location)}`}
-                                  target="_blank" rel="noreferrer"
-                                  className="flex items-center gap-1.5 text-xs font-medium hover:underline"
-                                  style={{color:C.primary}}>
-                                  <Navigation size={12}/>在地圖查看路線
-                                </a>
-                              )}
-                              {item.website && (
-                                <a href={item.website} target="_blank" rel="noreferrer"
-                                  className="text-xs flex items-center gap-1.5 hover:underline" style={{color:C.primary}}>
-                                  <Globe size={12}/>訂票 / 購票連結
-                                </a>
-                              )}
-                              {/* 動作列 */}
-                              <div className="flex gap-2 pt-1">
-                                {!readOnly && (
-                                  <button onClick={()=>openExpSheet(item)}
-                                    className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-xl text-xs font-bold"
-                                    style={{background:C.primaryLight, color:C.primary}}>
-                                    <DollarSign size={13}/>記一筆
+                                {/* 中間：交通方式 + 起訖 + 時長 */}
+                                <div className="flex-1 min-w-0">
+                                  <p className="text-[15px] font-black leading-snug"
+                                    style={{color:C.ink, letterSpacing:'-0.02em'}}>
+                                    {item.transportMode || item.title || '交通'}
+                                  </p>
+                                  {(item.from || item.to) && (
+                                    <a
+                                      href={`https://www.google.com/maps/dir/${encodeURIComponent(item.from||'')}/${encodeURIComponent(item.to||'')}`}
+                                      target="_blank" rel="noreferrer"
+                                      className="flex items-center gap-1 text-xs font-medium mt-1 hover:underline"
+                                      style={{color:C.primary}}>
+                                      <Navigation size={10}/>
+                                      {item.from||'—'} → {item.to||'—'}
+                                    </a>
+                                  )}
+                                  {item.duration && (
+                                    <p className="text-xs mt-0.5" style={{color:C.muted}}>{item.duration}</p>
+                                  )}
+                                </div>
+
+                                {/* 右側：編輯 → ... */}
+                                {isEditMode && (
+                                  <button
+                                    onClick={() => openDetailSheet(item)}
+                                    className="shrink-0 p-1"
+                                    style={{color:C.muted}}>
+                                    <MoreHorizontal size={18}/>
                                   </button>
                                 )}
-                                {!readOnly && isEditMode && (
-                                  <>
-                                    <button onClick={()=>showToast('編輯待接入')}
-                                      className="flex items-center justify-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold"
-                                      style={{background:'#EEF2F6', color:C.body}}>
-                                      <Edit2 size={13}/>編輯
-                                    </button>
-                                    <button onClick={()=>setItinerary(list=>list.filter(i=>i.id!==item.id))}
-                                      className="flex items-center justify-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold"
-                                      style={{background:C.dangerLight, color:C.danger}}>
-                                      <Trash2 size={13}/>刪除
-                                    </button>
-                                  </>
-                                )}
+
                               </div>
+
+                              {/* 記一筆：直接顯示在卡片底部（瀏覽模式）*/}
+                              {!isEditMode && !readOnly && (
+                                <div className="flex" style={{borderTop:`1px solid ${C.primary}22`}}>
+                                  <button onClick={()=>openExpSheetWithMode(item)}
+                                    className="flex-1 flex items-center justify-center gap-1.5 py-2.5 text-xs font-bold"
+                                    style={{color:C.primary}}>
+                                    <DollarSign size={13}/>記一筆
+                                  </button>
+                                </div>
+                              )}
+
+                            </div>
+
+                          ) : (
+
+                            /* ══ 景點卡片 ══ */
+                            <div className="rounded-2xl border overflow-hidden"
+                              style={{
+                                background: movingItemId===item.id ? C.primaryLight : C.card,
+                                borderColor: (isEditMode && editExpandedId===item.id) ? C.primary : movingItemId ? C.primary+'44' : C.border,
+                                boxShadow: C.cardShadow,
+                                transition: 'border-color 0.15s, background 0.15s',
+                              }}>
+
+                              {/* 卡片主體 */}
+                              <div className="px-4 pt-3 pb-3">
+                                <div className="flex items-center gap-3">
+
+                                  {/* 左欄：時間 + icon（恆常顯示），編輯模式額外加移動 handle */}
+                                  <div className="flex items-center gap-1.5 shrink-0">
+                                    {isEditMode && (
+                                      <button
+                                        onClick={() => {
+                                          if (movingItemId === item.id) setMovingItemId(null);
+                                          else if (movingItemId) handleMoveTarget(item.id, dateKey);
+                                          else setMovingItemId(item.id);
+                                        }}
+                                        className="p-1 rounded-lg shrink-0"
+                                        style={{
+                                          color: movingItemId===item.id ? C.warning : movingItemId ? C.primary : C.muted,
+                                          background: movingItemId===item.id ? C.warningLight : 'transparent',
+                                        }}>
+                                        {movingItemId===item.id
+                                          ? <X size={14}/>
+                                          : movingItemId
+                                            ? <ArrowRight size={14}/>
+                                            : <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                                                <line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/>
+                                                <line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/>
+                                                <line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>
+                                              </svg>
+                                        }
+                                      </button>
+                                    )}
+                                    {/* 時間 + icon：直排，置中對齊 */}
+                                    <div className="flex flex-col items-center" style={{width:'36px'}}>
+                                      <span className="text-[11px] font-black text-center leading-none mb-1.5"
+                                        style={{color:C.primary}}>{item.time}</span>
+                                      <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0"
+                                        style={{background:C.primaryLight}}>
+                                        <MapPin size={16} style={{color:C.primary}}/>
+                                      </div>
+                                    </div>
+                                  </div>
+
+                                  {/* 中間：標題 + 地點 + 備注 */}
+                                  <div className="flex-1 min-w-0">
+                                    <h3 className="text-[15px] font-black leading-snug"
+                                      style={{color:C.ink, letterSpacing:'-0.02em'}}>{item.title}</h3>
+                                    {item.location && (
+                                      <a href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(item.location)}`}
+                                        target="_blank" rel="noreferrer"
+                                        className="flex items-center gap-1 text-xs font-medium mt-1 hover:underline"
+                                        style={{color:C.primary}}>
+                                        <MapPin size={10}/>{item.location}
+                                      </a>
+                                    )}
+                                    {item.notes && (
+                                      <p className="text-xs mt-1 leading-relaxed" style={{color:C.body}}>{item.notes}</p>
+                                    )}
+                                  </div>
+
+                                  {/* 右側：... 或 展開箭頭 */}
+                                  {isEditMode ? (
+                                    <button
+                                      onClick={() => openDetailSheet(item)}
+                                      className="shrink-0 p-1"
+                                      style={{color:C.muted}}>
+                                      <MoreHorizontal size={18}/>
+                                    </button>
+                                  ) : (
+                                    <button
+                                      onClick={() => toggleExpanded(item.id)}
+                                      className="shrink-0 p-1"
+                                      style={{color:C.muted}}>
+                                      {expandedItems.has(item.id) ? <ChevronUp size={16}/> : <ChevronDown size={16}/>}
+                                    </button>
+                                  )}
+
+                                </div>
+
+                                {/* 瀏覽模式展開詳情 */}
+                                {!isEditMode && expandedItems.has(item.id) && (
+                                  <div className="mt-3 pt-3 space-y-2" style={{borderTop:`1px solid ${C.border}`}}>
+                                    {item.hours   && <p className="text-xs flex items-center gap-1.5" style={{color:C.muted}}><Clock  size={12}/>營業時間：{item.hours}</p>}
+                                    {item.tickets && <p className="text-xs flex items-center gap-1.5" style={{color:C.muted}}><Ticket size={12}/>門票：{item.tickets}</p>}
+                                    {item.website && (
+                                      <a href={item.website} target="_blank" rel="noreferrer"
+                                        className="text-xs flex items-center gap-1.5 hover:underline" style={{color:C.primary}}>
+                                        <Globe size={12}/>官方網站
+                                      </a>
+                                    )}
+                                  </div>
+                                )}
+
+                              </div>
+
+                              {/* 動作列（瀏覽模式） */}
+                              {!isEditMode && (
+                                <div className="flex" style={{borderTop:`1px solid ${C.border}`}}>
+                                  {!readOnly && (
+                                    <button onClick={()=>openExpSheetWithMode(item)}
+                                      className="flex-1 flex items-center justify-center gap-1.5 py-2.5 text-xs font-bold active:opacity-70"
+                                      style={{color:C.primary}}>
+                                      <DollarSign size={14}/>記一筆
+                                    </button>
+                                  )}
+                                  {item.location && (
+                                    <a href={`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(item.location)}`}
+                                      target="_blank" rel="noreferrer"
+                                      className="flex-1 flex items-center justify-center gap-1.5 py-2.5 text-xs font-bold"
+                                      style={{color:C.primary, borderLeft:!readOnly?`1px solid ${C.border}`:'none'}}>
+                                      <Navigation size={14}/>路線
+                                    </a>
+                                  )}
+                                </div>
+                              )}
+
+                            </div>
+
+                          )}{/* end isTransport ? */}
+
+                          {/* 左滑刪除 backdrop（只在編輯模式 + 非交通） */}
+                          {isEditMode && !isTransport && swipeMap[item.id] && (
+                            <div className="flex items-center justify-end px-4 -mt-3 mb-3">
+                              <button
+                                onClick={() => {
+                                  if (!window.confirm('確定要刪除這個行程嗎？')) return;
+                                  setItinerary(list => list.filter(i => i.id !== item.id));
+                                  setSwipedId(null);
+                                  showToast('已刪除');
+                                }}
+                                className="flex items-center gap-1.5 px-4 py-2.5 rounded-2xl text-sm font-black text-white"
+                                style={{background: C.danger, boxShadow:`0 4px 16px ${C.danger}55`}}>
+                                <Trash2 size={15}/>刪除
+                              </button>
+                              <button
+                                onClick={() => closeSwipe(item.id)}
+                                className="ml-2 px-3 py-2.5 rounded-2xl text-sm font-bold"
+                                style={{background:'#F4F7FA', color:C.muted}}>
+                                取消
+                              </button>
                             </div>
                           )}
+
                         </div>
-                      ) : (
-                        /* 景點 */
+                      ); // end item return
+                    })}{/* end dayItems.map */}
+
+                    {/* ── 空白日提示 ── */}
+                    {dayItems.length === 0 && (
+                      <div className="flex flex-col items-center gap-4 py-14">
+                        <Map size={40} style={{color:C.border}}/>
+                        <div className="text-center">
+                          <p className="text-sm font-black" style={{color:C.ink}}>這天還沒有行程</p>
+                          <p className="text-xs mt-1" style={{color:C.muted}}>直接新增，或點右下 ＋</p>
+                        </div>
+                        <div className="flex gap-3">
+                          <button onClick={()=>showToast('新增景點 – 待接入')}
+                            className="fab flex items-center gap-2 px-5 py-3 rounded-2xl text-sm font-black"
+                            style={{background:C.primaryLight, color:C.primary, boxShadow:C.cardShadow}}>
+                            <MapPin size={16}/>新增景點
+                          </button>
+                          <button onClick={()=>showToast('新增交通 – 待接入')}
+                            className="fab flex items-center gap-2 px-5 py-3 rounded-2xl text-sm font-black"
+                            style={{background:'#F4F7FA', color:C.body, boxShadow:C.cardShadow, border:`1px solid ${C.border}`}}>
+                            <Car size={16}/>新增交通
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* ── 當天購物清單 ── */}
+                    {shopItems.length > 0 && (
+                      <div className="mt-5">
+                        <div className="flex items-center gap-2 mb-2 px-1">
+                          <ShoppingBag size={13} style={{color:C.muted}}/>
+                          <span className="text-[11px] font-black uppercase tracking-widest" style={{color:C.muted}}>今日購物清單</span>
+                        </div>
                         <div className="rounded-2xl border overflow-hidden"
                           style={{background:C.card, borderColor:C.border, boxShadow:C.cardShadow}}>
-                          <div className="px-4 pt-4 pb-3">
-                            <div className="flex items-start gap-3">
-                              <div className="shrink-0 pt-0.5">
-                                <span className="text-xs font-black" style={{color:C.primary}}>{item.time}</span>
-                              </div>
-                              <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0"
-                                style={{background:C.primaryLight}}>
-                                <MapPin size={16} style={{color:C.primary}}/>
-                              </div>
-                              <div className="flex-1 min-w-0">
-                                <h3 className="text-[15px] font-black leading-snug" style={{color:C.ink, letterSpacing:'-0.02em'}}>{item.title}</h3>
-                                {item.location && (
-                                  <a href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(item.location)}`}
-                                    target="_blank" rel="noreferrer"
-                                    className="flex items-center gap-1 text-xs font-medium mt-1 hover:underline" style={{color:C.primary}}>
-                                    <MapPin size={10}/>{item.location}
-                                  </a>
-                                )}
-                                {item.notes && <p className="text-xs mt-1 leading-relaxed" style={{color:C.body}}>{item.notes}</p>}
-                              </div>
-                              <button onClick={()=>toggleExpanded(item.id)} className="shrink-0 p-1" style={{color:C.muted}}>
-                                {expandedItems.has(item.id)?<ChevronUp size={16}/>:<ChevronDown size={16}/>}
-                              </button>
+                          {shopItems.map((shopItem, gi, ga) => (
+                            <div key={shopItem.id}>
+                              <p className="px-4 pt-3 pb-1 text-xs font-black" style={{color:C.muted}}>{shopItem.title}</p>
+                              {shopItem.shoppingList.map((s, si, sa) => (
+                                <div key={s.id} className="flex items-center gap-3 px-4 py-2.5"
+                                  style={{borderBottom:(gi<ga.length-1||si<sa.length-1)?`1px solid ${C.border}`:'none'}}>
+                                  <div className="w-2 h-2 rounded-full shrink-0"
+                                    style={{background:s.checked?C.primary:'#D1D9E0'}}/>
+                                  <span className="flex-1 text-sm font-medium"
+                                    style={{color:s.checked?C.muted:C.ink, textDecoration:s.checked?'line-through':'none'}}>
+                                    {s.text}
+                                  </span>
+                                </div>
+                              ))}{/* end shoppingList.map */}
                             </div>
-                            {expandedItems.has(item.id) && (
-                              <div className="mt-3 pt-3 space-y-2" style={{borderTop:`1px solid ${C.border}`}}>
-                                {item.hours   && <p className="text-xs flex items-center gap-1.5" style={{color:C.muted}}><Clock  size={12}/>營業時間：{item.hours}</p>}
-                                {item.tickets && <p className="text-xs flex items-center gap-1.5" style={{color:C.muted}}><Ticket size={12}/>門票：{item.tickets}</p>}
-                                {item.website && <a href={item.website} target="_blank" rel="noreferrer" className="text-xs flex items-center gap-1.5 hover:underline" style={{color:C.primary}}><Globe size={12}/>官方網站</a>}
-                              </div>
-                            )}
-                          </div>
-                          <div className="flex" style={{borderTop:`1px solid ${C.border}`}}>
-                            {!readOnly && (
-                              <button onClick={()=>openExpSheet(item)}
-                                className="flex-1 flex items-center justify-center gap-1.5 py-2.5 text-xs font-bold active:opacity-70"
-                                style={{color:C.primary}}>
-                                <DollarSign size={14}/>記一筆
-                              </button>
-                            )}
-                            {item.location && (
-                              <a href={`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(item.location)}`}
-                                target="_blank" rel="noreferrer"
-                                className="flex-1 flex items-center justify-center gap-1.5 py-2.5 text-xs font-bold"
-                                style={{color:C.primary, borderLeft:!readOnly?`1px solid ${C.border}`:'none'}}>
-                                <Navigation size={14}/>路線
-                              </a>
-                            )}
-                            {!readOnly && isEditMode && (
-                              <>
-                                <button onClick={()=>showToast('編輯待接入')}
-                                  className="flex items-center justify-center px-3 py-2.5 text-xs font-bold"
-                                  style={{color:C.primary, borderLeft:`1px solid ${C.border}`}}>
-                                  <Edit2 size={13}/>
-                                </button>
-                                <button onClick={()=>setItinerary(list=>list.filter(i=>i.id!==item.id))}
-                                  className="flex items-center justify-center px-3 py-2.5 text-xs font-bold"
-                                  style={{color:C.danger, borderLeft:`1px solid ${C.border}`}}>
-                                  <Trash2 size={13}/>
-                                </button>
-                              </>
-                            )}
-                          </div>
+                          ))}{/* end shopItems.map */}
                         </div>
-                      )}
-                    </div>
-                  );
-                })}
+                      </div>
+                    )}
 
-                {/* 當天購物清單（行程最底） */}
-                {todayShopItems.length>0 && (
-                  <div className="mt-5">
-                    <div className="flex items-center gap-2 mb-2 px-1">
-                      <ShoppingBag size={13} style={{color:C.muted}}/>
-                      <span className="text-[11px] font-black uppercase tracking-widest" style={{color:C.muted}}>今日購物清單</span>
-                    </div>
-                    <div className="rounded-2xl border overflow-hidden" style={{background:C.card, borderColor:C.border, boxShadow:C.cardShadow}}>
-                      {todayShopItems.map((item,gi,ga)=>(
-                        <div key={item.id}>
-                          <p className="px-4 pt-3 pb-1 text-xs font-black" style={{color:C.muted}}>{item.title}</p>
-                          {item.shoppingList.map((s,si,sa)=>(
-                            <div key={s.id} className="flex items-center gap-3 px-4 py-2.5"
-                              style={{borderBottom:(gi<ga.length-1||si<sa.length-1)?`1px solid ${C.border}`:'none'}}>
-                              <div className="w-2 h-2 rounded-full shrink-0" style={{background:s.checked?C.primary:'#D1D9E0'}}/>
-                              <span className="flex-1 text-sm font-medium"
-                                style={{color:s.checked?C.muted:C.ink, textDecoration:s.checked?'line-through':'none'}}>{s.text}</span>
-                            </div>
-                          ))}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
+                    {/* ── 天間分隔線（編輯模式） ── */}
+                    {isEditMode && !isLastDay && (
+                      <div className="mt-4 mb-0 h-px" style={{background:C.border}}/>
+                    )}
 
-                {itinerary.filter(i=>i.date===currentDate).length===0 && sortedDates.length>0 && (
-                  <div className="flex flex-col items-center gap-4 py-14">
-                    <Map size={40} style={{color:C.border}}/>
-                    <div className="text-center">
-                      <p className="text-sm font-black" style={{color:C.ink}}>這天還沒有行程</p>
-                      <p className="text-xs mt-1" style={{color:C.muted}}>直接新增，或點右下 ＋</p>
-                    </div>
-                    <div className="flex gap-3">
-                      <button onClick={()=>showToast('新增景點 – 待接入')}
-                        className="fab flex items-center gap-2 px-5 py-3 rounded-2xl text-sm font-black"
-                        style={{background:C.primaryLight, color:C.primary, boxShadow:C.cardShadow}}>
-                        <MapPin size={16}/>新增景點
-                      </button>
-                      <button onClick={()=>showToast('新增交通 – 待接入')}
-                        className="fab flex items-center gap-2 px-5 py-3 rounded-2xl text-sm font-black"
-                        style={{background:'#F4F7FA', color:C.body, boxShadow:C.cardShadow, border:`1px solid ${C.border}`}}>
-                        <Car size={16}/>新增交通
-                      </button>
-                    </div>
                   </div>
-                )}
-                {sortedDates.length===0 && (
-                  <div className="text-center py-20 flex flex-col items-center gap-4" style={{color:C.muted}}>
-                    <Plane size={52} opacity={0.15}/>
-                    <p className="font-black text-base" style={{color:C.ink, letterSpacing:'-0.02em'}}>尚未新增任何行程</p>
-                    <p className="text-sm mt-1">先設定旅行日期，開始規劃吧</p>
-                  </div>
-                )}
-              </div>
+                ); // end dateKey return
+              })}
+              {/* end sortedDates.map */}
+
             </div>
+            {/* end scroll-area */}
           </div>
         )}
 
@@ -841,24 +1173,21 @@ export default function TripApp({ initialData = MOCK_DATA, readOnly = false, onB
             <div className="shrink-0 mx-4 mt-4 mb-3 rounded-3xl p-4 text-white"
               style={{background:C.primary, boxShadow:'0 8px 32px rgba(72,116,158,0.25)'}}>
               <p className="text-xs font-bold uppercase tracking-widest mb-1" style={{color:'rgba(255,255,255,0.55)'}}>
-                總花費 · {baseCurrency}
+                總花費
               </p>
               <p className="text-4xl font-black mb-4 tracking-tighter">
-                {Math.round(financeSummary.total).toLocaleString()}
+                {baseCurrency} {Math.round(financeSummary.total).toLocaleString()}
               </p>
+              {/* 每人花費：只顯示名字 + 消費金額 + 幣別 */}
               <div className="grid grid-cols-2 gap-2">
-                {users.map(u=>{
+                {users.map(u => {
                   const s = financeSummary.userStats[u];
                   if (!s) return null;
-                  const bal = s.paid - s.consumed;
                   return (
                     <div key={u} className="rounded-2xl p-3" style={{background:'rgba(255,255,255,0.12)'}}>
-                      <p className="text-xs font-medium mb-1 truncate" style={{color:'rgba(255,255,255,0.55)'}}>{u}</p>
-                      <p className="text-xl font-black text-white">{Math.round(s.consumed).toLocaleString()}</p>
-                      <p className="text-xs mt-1" style={{color:'rgba(255,255,255,0.45)'}}>已付 {Math.round(s.paid).toLocaleString()}</p>
-                      <p className="text-xs font-black mt-0.5"
-                        style={{color:bal>0?'#6EE7B7':bal<0?'#FCA5A5':'rgba(255,255,255,0.4)'}}>
-                        {bal>0?`需收款 ${Math.abs(Math.round(bal)).toLocaleString()}`:bal<0?`需付款 ${Math.abs(Math.round(bal)).toLocaleString()}`:'已結清'}
+                      <p className="text-xs font-medium truncate mb-1" style={{color:'rgba(255,255,255,0.55)'}}>{u}</p>
+                      <p className="text-base font-black text-white leading-tight">
+                        {baseCurrency} {Math.round(s.consumed).toLocaleString()}
                       </p>
                     </div>
                   );
@@ -869,21 +1198,36 @@ export default function TripApp({ initialData = MOCK_DATA, readOnly = false, onB
             {/* 可捲動費用區 */}
             <div className="scroll-area flex-1 pb-28 px-4 space-y-4">
 
-              {/* Settlement */}
-              {settlement.length>0 && (
+              {/* 建議結算：口語化，只列需要付款的人 */}
+              {settlement.length > 0 && (
                 <div className="rounded-2xl border overflow-hidden" style={{background:C.card, borderColor:C.border, boxShadow:C.cardShadow}}>
                   <div className="px-4 py-3 border-b" style={{borderColor:C.border}}>
-                    <p className="text-[11px] font-black uppercase tracking-widest" style={{color:C.muted}}>建議結算</p>
+                    <p className="text-[11px] font-black uppercase tracking-widest" style={{color:C.muted}}>費用結算</p>
                   </div>
-                  <div className="px-4 py-3 space-y-2">
-                    {settlement.map((t,i)=>(
-                      <div key={i} className="flex items-center gap-3 px-3 py-2.5 rounded-xl" style={{background:'#F8FAFD'}}>
-                        <span className="font-black text-sm" style={{color:C.danger}}>{t.from}</span>
-                        <ArrowRight size={13} style={{color:C.muted}} className="shrink-0"/>
-                        <span className="font-black text-sm" style={{color:C.primary}}>{t.to}</span>
-                        <span className="ml-auto font-black text-sm" style={{color:C.ink}}>{baseCurrency} {t.amount.toLocaleString()}</span>
+                  <div className="px-4 py-3 space-y-2.5">
+                    {settlement.map((t, i) => (
+                      <div key={i} className="rounded-2xl px-4 py-3" style={{background:'#F4F8FC'}}>
+                        {/* 句子：「小明 需要付給 小花」 */}
+                        <div className="flex items-center gap-1.5 mb-1.5 flex-wrap">
+                          <span className="text-sm font-black" style={{color:C.ink}}>{t.from}</span>
+                          <span className="text-xs font-medium" style={{color:C.muted}}>需要付給</span>
+                          <span className="text-sm font-black" style={{color:C.primary}}>{t.to}</span>
+                        </div>
+                        {/* 金額 */}
+                        <p className="text-xl font-black tracking-tight" style={{color:C.ink}}>
+                          {baseCurrency} {t.amount.toLocaleString()}
+                        </p>
                       </div>
                     ))}
+                    {/* 已結清的人不列出 */}
+                    {users.filter(u => {
+                      const s = financeSummary.userStats[u];
+                      return s && Math.abs(s.paid - s.consumed) < 1;
+                    }).length > 0 && (
+                      <p className="text-xs text-center pt-1" style={{color:C.muted}}>
+                        其餘成員已結清
+                      </p>
+                    )}
                   </div>
                 </div>
               )}
@@ -1002,26 +1346,36 @@ export default function TripApp({ initialData = MOCK_DATA, readOnly = false, onB
       {/* ══ FAB ══ */}
       {!readOnly && (
         <div className="fixed z-50" style={{bottom:'76px', right:`max(16px, calc(50vw - 196px))`}}>
-          {mode==='itinerary' && (
+          {mode==='itinerary' && isEditMode && (
             <div className="flex flex-col gap-2 items-end">
-              {isEditMode && (
+              {/* 展開的子選項：點 + 後才出現 */}
+              {fabOpen && (
                 <>
-                  <button onClick={()=>showToast('新增交通 – 待接入')}
+                  <button
+                    onClick={() => { showToast('新增交通 – 待接入'); setFabOpen(false); }}
                     className="fab flex items-center gap-2 pr-4 pl-3 py-2.5 rounded-full text-sm font-black text-white shadow-lg"
-                    style={{background:C.primary+'CC', backdropFilter:'blur(8px)'}}>
+                    style={{background:C.primary+'DD', backdropFilter:'blur(8px)', boxShadow:`0 4px 16px ${C.primary}55`}}>
                     <Car size={16}/>交通
                   </button>
-                  <button onClick={()=>showToast('新增景點 – 待接入')}
+                  <button
+                    onClick={() => { showToast('新增景點 – 待接入'); setFabOpen(false); }}
                     className="fab flex items-center gap-2 pr-4 pl-3 py-2.5 rounded-full text-sm font-black text-white shadow-lg"
-                    style={{background:C.primary, boxShadow:'0 4px 20px rgba(72,116,158,0.4)'}}>
+                    style={{background:C.primary, boxShadow:`0 4px 20px ${C.primary}66`}}>
                     <MapPin size={16}/>景點
                   </button>
                 </>
               )}
-              <button onClick={()=>setIsEditMode(v=>!v)}
+              {/* 主 FAB：+ 旋轉成 × */}
+              <button
+                onClick={() => setFabOpen(v => !v)}
                 className="fab w-14 h-14 rounded-full flex items-center justify-center text-white shadow-xl"
-                style={{background:isEditMode?C.ink:C.primary, boxShadow:isEditMode?'0 4px 20px rgba(0,0,0,0.3)':'0 4px 24px rgba(72,116,158,0.45)'}}>
-                {isEditMode ? <Check size={24}/> : <Plus size={26}/>}
+                style={{
+                  background: fabOpen ? C.ink : C.primary,
+                  boxShadow: fabOpen ? '0 4px 20px rgba(0,0,0,0.35)' : `0 4px 24px ${C.primary}77`,
+                  transform: fabOpen ? 'rotate(45deg)' : 'rotate(0deg)',
+                  transition: 'transform 0.2s ease, background 0.2s ease',
+                }}>
+                <Plus size={26}/>
               </button>
             </div>
           )}
@@ -1042,7 +1396,206 @@ export default function TripApp({ initialData = MOCK_DATA, readOnly = false, onB
         </div>
       )}
 
-      {/* ══ CHECKLIST SHEET ══ */}
+      {/* ══ DETAIL / EDIT SHEET ══ */}
+      {detailSheet && (
+        <div className="fixed inset-0 z-[65] flex flex-col justify-end">
+          <div className="absolute inset-0" style={{background:'rgba(0,0,0,0.3)'}} onClick={() => setDetailSheet(null)}/>
+          <div className="relative flex flex-col rounded-t-3xl"
+            style={{background:C.card, boxShadow:'0 -8px 40px rgba(0,0,0,0.15)', maxHeight:'88dvh'}}>
+
+            {/* 把手 + Header */}
+            <div className="shrink-0 px-5 pt-3 pb-3" style={{borderBottom:`1px solid ${C.border}`}}>
+              <div className="flex justify-center mb-3">
+                <div className="w-10 h-1 rounded-full" style={{background:C.border}}/>
+              </div>
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="text-lg shrink-0">
+                    {detailSheet.type==='transport' ? getTransportEmoji(detailData.transportMode||detailSheet.transportMode) : '📍'}
+                  </span>
+                  <p className="text-base font-black truncate" style={{color:C.ink}}>
+                    {detailSheet.type==='transport'
+                      ? (detailData.from||detailSheet.from||'') + (detailData.to||detailSheet.to ? ' → '+(detailData.to||detailSheet.to) : '') || detailSheet.title || '交通'
+                      : (detailData.title||detailSheet.title)}
+                  </p>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    onClick={saveDetailSheet}
+                    className="px-4 py-1.5 rounded-xl text-sm font-black"
+                    style={{background:C.primary, color:'#fff'}}>
+                    儲存
+                  </button>
+                  <button onClick={() => setDetailSheet(null)}
+                    className="w-8 h-8 flex items-center justify-center rounded-full"
+                    style={{background:'#F4F7FA', color:C.muted}}>
+                    <X size={16}/>
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* 可捲動表單內容 */}
+            <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
+
+              {detailSheet.type === 'transport' ? (
+                /* ── 交通欄位 ── */
+                <>
+                  <div className="flex gap-3">
+                    <div className="flex-1">
+                      <p className="text-[10px] font-black uppercase tracking-widest mb-1.5" style={{color:C.muted}}>交通方式</p>
+                      <input value={detailData.transportMode||''} onChange={e=>setDetailData(d=>({...d,transportMode:e.target.value}))}
+                        placeholder="電車 / 巴士 / 飛機…"
+                        className="w-full border rounded-xl px-3 py-2.5 text-sm"
+                        style={{borderColor:C.border, color:C.ink}}/>
+                    </div>
+                    <div>
+                      <p className="text-[10px] font-black uppercase tracking-widest mb-1.5" style={{color:C.muted}}>時間</p>
+                      <input type="time" value={detailData.time||''} onChange={e=>setDetailData(d=>({...d,time:e.target.value}))}
+                        className="border rounded-xl px-3 py-2.5 text-sm font-bold"
+                        style={{borderColor:C.border, color:C.primary}}/>
+                    </div>
+                  </div>
+
+                  <div>
+                    <p className="text-[10px] font-black uppercase tracking-widest mb-1.5" style={{color:C.muted}}>起訖站</p>
+                    <div className="flex items-center gap-2">
+                      <input value={detailData.from||''} onChange={e=>setDetailData(d=>({...d,from:e.target.value}))}
+                        placeholder="出發地"
+                        className="flex-1 border rounded-xl px-3 py-2.5 text-sm"
+                        style={{borderColor:C.border, color:C.ink}}/>
+                      <ArrowRight size={14} style={{color:C.primary, flexShrink:0}}/>
+                      <input value={detailData.to||''} onChange={e=>setDetailData(d=>({...d,to:e.target.value}))}
+                        placeholder="目的地"
+                        className="flex-1 border rounded-xl px-3 py-2.5 text-sm"
+                        style={{borderColor:C.border, color:C.ink}}/>
+                    </div>
+                  </div>
+
+                  <div className="flex gap-3">
+                    <div className="flex-1">
+                      <p className="text-[10px] font-black uppercase tracking-widest mb-1.5" style={{color:C.muted}}>班次 / 車次</p>
+                      <input value={detailData.title||''} onChange={e=>setDetailData(d=>({...d,title:e.target.value}))}
+                        placeholder="班次名稱"
+                        className="w-full border rounded-xl px-3 py-2.5 text-sm"
+                        style={{borderColor:C.border, color:C.ink}}/>
+                    </div>
+                    <div>
+                      <p className="text-[10px] font-black uppercase tracking-widest mb-1.5" style={{color:C.muted}}>時長</p>
+                      <input value={detailData.duration||''} onChange={e=>setDetailData(d=>({...d,duration:e.target.value}))}
+                        placeholder="40 分鐘"
+                        className="w-28 border rounded-xl px-3 py-2.5 text-sm"
+                        style={{borderColor:C.border, color:C.ink}}/>
+                    </div>
+                  </div>
+
+                  <div>
+                    <p className="text-[10px] font-black uppercase tracking-widest mb-1.5" style={{color:C.muted}}>票價</p>
+                    <input value={detailData.tickets||''} onChange={e=>setDetailData(d=>({...d,tickets:e.target.value}))}
+                      placeholder="JPY 920"
+                      className="w-full border rounded-xl px-3 py-2.5 text-sm"
+                      style={{borderColor:C.border, color:C.ink}}/>
+                  </div>
+
+                  <div>
+                    <p className="text-[10px] font-black uppercase tracking-widest mb-1.5" style={{color:C.muted}}>備注</p>
+                    <textarea value={detailData.notes||''} onChange={e=>setDetailData(d=>({...d,notes:e.target.value}))}
+                      placeholder="注意事項、換乘資訊…"
+                      rows={2}
+                      className="w-full border rounded-xl px-3 py-2.5 text-sm resize-none"
+                      style={{borderColor:C.border, color:C.ink}}/>
+                  </div>
+
+                  <div>
+                    <p className="text-[10px] font-black uppercase tracking-widest mb-1.5" style={{color:C.muted}}>訂票連結</p>
+                    <input value={detailData.website||''} onChange={e=>setDetailData(d=>({...d,website:e.target.value}))}
+                      placeholder="https://..."
+                      className="w-full border rounded-xl px-3 py-2.5 text-sm"
+                      style={{borderColor:C.border, color:C.ink}}/>
+                  </div>
+                </>
+
+              ) : (
+                /* ── 景點欄位 ── */
+                <>
+                  <div>
+                    <p className="text-[10px] font-black uppercase tracking-widest mb-1.5" style={{color:C.muted}}>時間</p>
+                    <input type="time" value={detailData.time||''} onChange={e=>setDetailData(d=>({...d,time:e.target.value}))}
+                      className="border rounded-xl px-3 py-2.5 text-sm font-bold"
+                      style={{borderColor:C.border, color:C.primary}}/>
+                  </div>
+
+                  <div>
+                    <p className="text-[10px] font-black uppercase tracking-widest mb-1.5" style={{color:C.muted}}>景點名稱</p>
+                    <input value={detailData.title||''} onChange={e=>setDetailData(d=>({...d,title:e.target.value}))}
+                      placeholder="景點名稱"
+                      className="w-full border rounded-xl px-3 py-2.5 text-sm font-black"
+                      style={{borderColor:C.primary, color:C.ink, boxShadow:`0 0 0 2px ${C.primary}22`}}/>
+                  </div>
+
+                  <div>
+                    <p className="text-[10px] font-black uppercase tracking-widest mb-1.5" style={{color:C.muted}}>地點</p>
+                    <input value={detailData.location||''} onChange={e=>setDetailData(d=>({...d,location:e.target.value}))}
+                      placeholder="地址 / 地點名稱"
+                      className="w-full border rounded-xl px-3 py-2.5 text-sm"
+                      style={{borderColor:C.border, color:C.ink}}/>
+                  </div>
+
+                  <div>
+                    <p className="text-[10px] font-black uppercase tracking-widest mb-1.5" style={{color:C.muted}}>備注</p>
+                    <textarea value={detailData.notes||''} onChange={e=>setDetailData(d=>({...d,notes:e.target.value}))}
+                      placeholder="注意事項、行前準備…"
+                      rows={3}
+                      className="w-full border rounded-xl px-3 py-2.5 text-sm resize-none"
+                      style={{borderColor:C.border, color:C.ink}}/>
+                  </div>
+
+                  <div className="flex gap-3">
+                    <div className="flex-1">
+                      <p className="text-[10px] font-black uppercase tracking-widest mb-1.5" style={{color:C.muted}}>票價</p>
+                      <input value={detailData.tickets||''} onChange={e=>setDetailData(d=>({...d,tickets:e.target.value}))}
+                        placeholder="門票 / 票價"
+                        className="w-full border rounded-xl px-3 py-2.5 text-sm"
+                        style={{borderColor:C.border, color:C.ink}}/>
+                    </div>
+                    <div className="flex-1">
+                      <p className="text-[10px] font-black uppercase tracking-widest mb-1.5" style={{color:C.muted}}>營業時間</p>
+                      <input value={detailData.hours||''} onChange={e=>setDetailData(d=>({...d,hours:e.target.value}))}
+                        placeholder="09:00–18:00"
+                        className="w-full border rounded-xl px-3 py-2.5 text-sm"
+                        style={{borderColor:C.border, color:C.ink}}/>
+                    </div>
+                  </div>
+
+                  <div>
+                    <p className="text-[10px] font-black uppercase tracking-widest mb-1.5" style={{color:C.muted}}>網站</p>
+                    <input value={detailData.website||''} onChange={e=>setDetailData(d=>({...d,website:e.target.value}))}
+                      placeholder="https://..."
+                      className="w-full border rounded-xl px-3 py-2.5 text-sm"
+                      style={{borderColor:C.border, color:C.ink}}/>
+                  </div>
+                </>
+              )}
+
+            </div>
+
+            {/* 固定底部：刪除按鈕 */}
+            {!readOnly && (
+              <div className="shrink-0 px-5 pt-3 pb-8" style={{borderTop:`1px solid ${C.border}`}}>
+                <button
+                  onClick={deleteFromDetail}
+                  className="w-full py-3 rounded-2xl text-sm font-black flex items-center justify-center gap-2"
+                  style={{background:C.dangerLight, color:C.danger}}>
+                  <Trash2 size={15}/>刪除此行程
+                </button>
+              </div>
+            )}
+
+          </div>
+        </div>
+      )}
+
+            {/* ══ CHECKLIST SHEET ══ */}
       {sheetOpen && (
         <div className="fixed inset-0 z-[60] flex flex-col justify-end">
           {/* 半透明遮罩 */}
@@ -1196,22 +1749,79 @@ export default function TripApp({ initialData = MOCK_DATA, readOnly = false, onB
                 </div>
               </div>
 
-              {/* 分攤成員 */}
+              {/* 分攤方式 */}
               {users.length > 1 && (
                 <div>
-                  <p className="text-[11px] font-black uppercase tracking-widest mb-2" style={{color:C.muted}}>分攤成員</p>
-                  <div className="flex gap-2 flex-wrap">
-                    {users.map(u=>(
-                      <button key={u} onClick={()=>toggleSplitUser(u)}
-                        className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-bold"
-                        style={expSheetSplit.includes(u)
-                          ? {background:C.primaryLight, color:C.primary, border:`1.5px solid ${C.primary}`}
+                  <p className="text-[11px] font-black uppercase tracking-widest mb-2" style={{color:C.muted}}>分攤方式</p>
+                  {/* 模式切換 */}
+                  <div className="flex gap-2 mb-3">
+                    {[['equal','平分'],['custom','自訂'],['self','各付各的']].map(([mode,label])=>(
+                      <button key={mode} onClick={()=>{
+                        setSplitMode(mode);
+                        if (mode==='equal') setExpSheetSplit([...users]);
+                        else if (mode==='self') setExpSheetSplit([expSheetPaidBy]);
+                      }}
+                        className="flex-1 py-2 rounded-xl text-xs font-black"
+                        style={splitMode===mode
+                          ? {background:C.primary, color:'#fff'}
                           : {background:'#F4F7FA', color:C.muted, border:`1px solid ${C.border}`}}>
-                        {expSheetSplit.includes(u) && <Check size={12}/>}
-                        {u}
+                        {label}
                       </button>
                     ))}
                   </div>
+
+                  {/* 平分：顯示每人金額 */}
+                  {splitMode==='equal' && expSheetAmt>0 && (
+                    <p className="text-xs mb-2" style={{color:C.muted}}>
+                      每人 {expSheetCur} {(parseFloat(expSheetAmt)/users.length).toFixed(0)}
+                    </p>
+                  )}
+
+                  {/* 自訂：各自輸入金額 */}
+                  {splitMode==='custom' && (
+                    <div className="space-y-2 mb-2">
+                      {users.map(u=>(
+                        <div key={u} className="flex items-center gap-2">
+                          <span className="text-sm font-bold w-16 shrink-0" style={{color:C.ink}}>{u}</span>
+                          <input type="number" inputMode="decimal"
+                            value={customAmounts[u]||''}
+                            onChange={e=>setCustomAmounts(prev=>({...prev,[u]:e.target.value}))}
+                            placeholder="0"
+                            className="flex-1 border rounded-xl px-3 py-2 text-sm"
+                            style={{borderColor:C.border, color:C.ink}}/>
+                          <span className="text-xs shrink-0" style={{color:C.muted}}>{expSheetCur}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* 各付各的：勾選哪些人參與（各付自己那份） */}
+                  {splitMode==='self' && (
+                    <div className="flex gap-2 flex-wrap">
+                      {users.map(u=>(
+                        <button key={u} onClick={()=>toggleSplitUser(u)}
+                          className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-bold"
+                          style={expSheetSplit.includes(u)
+                            ? {background:C.primaryLight, color:C.primary, border:`1.5px solid ${C.primary}`}
+                            : {background:'#F4F7FA', color:C.muted, border:`1px solid ${C.border}`}}>
+                          {expSheetSplit.includes(u) && <Check size={12}/>}
+                          {u}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* 平分預設所有人都打勾（不顯示勾選介面，改用上方描述） */}
+                  {splitMode==='equal' && (
+                    <div className="flex gap-2 flex-wrap">
+                      {users.map(u=>(
+                        <span key={u} className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold"
+                          style={{background:C.primaryLight, color:C.primary}}>
+                          <Check size={11}/>{u}
+                        </span>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
