@@ -14,6 +14,7 @@
 import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import { doc, updateDoc, serverTimestamp, setDoc, getDocs, getDoc, collection, query, where, onSnapshot } from 'firebase/firestore';
 import { db } from '../firebase/config';
+import ExpenseFormModal from './ExpenseFormModal';
 import {
   MapPin, Clock, Globe, ShoppingBag, Ticket, Navigation,
   Car, Plus, Edit2, Trash2, DollarSign,
@@ -338,6 +339,7 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
   const [newAccomCheckOut,setNewAccomCheckOut] = useState('');
   const [newAccomName,   setNewAccomName]   = useState('');
   const [newAccomLoc,    setNewAccomLoc]    = useState('');
+  const [editingAccomIdx,setEditingAccomIdx]= useState(null); // index being edited
   // 收藏景點 form
   const [savedSpotName,  setSavedSpotName]  = useState('');
   const [savedSpotNote,  setSavedSpotNote]  = useState('');
@@ -353,6 +355,7 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
   const [shareStatus,    setShareStatus]    = useState('');
   const [shareEditors,   setShareEditors]   = useState(initialData.editors || []);
   const [shareViewers,   setShareViewers]   = useState(initialData.viewers || []);
+  const [shareEmailMap,  setShareEmailMap]  = useState({}); // uid → email
   // People management
   const [isUsersLocked,  setIsUsersLocked]  = useState(true);
   const [newUser,        setNewUser]        = useState('');
@@ -435,21 +438,42 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
   const sortedDates   = useMemo(() => [...new Set(itinerary.map(i => i.date || '未定日期'))].sort(), [itinerary]);
   const currentDate   = sortedDates[selectedDay] || '';
 
-  // ─── Finance computed ────────────────────────────────────────────────────────
+  // ─── Finance computed（與舊版一致）─────────────────────────────────────────
+  const convertedExpenses = useMemo(() => expenses.map(exp => {
+    const expRate  = rates[exp.currency]  || 1;
+    const baseRate = rates[baseCurrency] || 1;
+    const baseAmount = (exp.amount * expRate) / baseRate;
+    return { ...exp, baseAmount, rateUsed: expRate / baseRate };
+  }), [expenses, rates, baseCurrency]);
+
   const financeSummary = useMemo(() => {
-    const toBase = (amount, currency) => amount * (rates[currency] ?? 1);
-    const userStats = Object.fromEntries(users.map(u => [u, { paid: 0, consumed: 0 }]));
     let total = 0;
-    expenses.forEach(exp => {
-      const base = toBase(exp.amount, exp.currency);
-      total += base;
-      if (userStats[exp.paidBy] !== undefined) userStats[exp.paidBy].paid += base;
-      const split = exp.splitWith || users;
-      const share = base / split.length;
-      split.forEach(u => { if (userStats[u] !== undefined) userStats[u].consumed += share; });
+    const userStats = users.reduce((acc, u) => ({ ...acc, [u]: { paid: 0, consumed: 0 } }), {});
+    convertedExpenses.forEach(exp => {
+      if (exp.splitMode === 'aa') {
+        const perPerson = exp.baseAmount;
+        (exp.aaSplitAmong || exp.splitAmong || []).forEach(u => {
+          if (userStats[u]) { userStats[u].paid += perPerson; userStats[u].consumed += perPerson; }
+        });
+        total += perPerson * (exp.aaSplitAmong || exp.splitAmong || []).length;
+      } else {
+        total += exp.baseAmount;
+        if (userStats[exp.paidBy]) userStats[exp.paidBy].paid += exp.baseAmount;
+        if (exp.splitMode === 'custom' && exp.customSplit) {
+          Object.entries(exp.customSplit).forEach(([u, amt]) => {
+            if (userStats[u]) userStats[u].consumed += Number(amt) * exp.rateUsed;
+          });
+        } else {
+          const cnt = exp.splitAmong?.length || 0;
+          if (cnt > 0) {
+            const pp = exp.baseAmount / cnt;
+            (exp.splitAmong || []).forEach(u => { if (userStats[u]) userStats[u].consumed += pp; });
+          }
+        }
+      }
     });
     return { total, userStats };
-  }, [expenses, users, rates]);
+  }, [convertedExpenses, users]);
 
   const settlement = useMemo(() => calcSettlement(financeSummary.userStats), [financeSummary]);
 
@@ -458,7 +482,7 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
 
   const openAddItem = (type, date) => {
     setAddItemData(type === 'transport'
-      ? { type:'transport', date, time:'', transportMode:'', from:'', to:'', title:'', duration:'', price:'', url:'', needTicket:false, ticketDeadline:'', notes:'' }
+      ? { type:'transport', date, time:'', transportMode:'', from:'', to:'', title:'', duration:'', price:'', priceCurrency:baseCurrency, url:'', needTicket:false, ticketDeadline:'', notes:'' }
       : { type:'place', date, time:'', title:'', location:'', notes:'', website:'', hours:'', tickets:'', shoppingList:[] }
     );
     setAddItemModal({ type, date });
@@ -479,6 +503,17 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
   };
   const toggleExpanded = (id) => setExpandedItems(prev => { const s = new Set(prev); s.has(id) ? s.delete(id) : s.add(id); return s; });
 
+  // 載入共享成員 email
+  useEffect(() => {
+    const allUids = [...(initialData.editors||[]), ...(initialData.viewers||[])];
+    if (!allUids.length) return;
+    Promise.all(allUids.map(uid => getDoc(doc(db,'userProfiles',uid)))).then(snaps => {
+      const map = {};
+      snaps.forEach(s => { if(s.exists()) map[s.id] = s.data().email || s.id; });
+      setShareEmailMap(map);
+    }).catch(()=>{});
+  }, []);
+
   const addShareMember = async () => {
     if (!newShareEmail.trim()) return;
     setShareStatus('查詢中...');
@@ -489,6 +524,7 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
       const newEditors = newShareRole==='editor' ? [...new Set([...shareEditors, targetUid])] : shareEditors;
       const newViewers = newShareRole==='viewer' ? [...new Set([...shareViewers, targetUid])] : shareViewers;
       setShareEditors(newEditors); setShareViewers(newViewers);
+      setShareEmailMap(prev => ({...prev, [targetUid]: newShareEmail.trim()}));
       await updateDoc(doc(db,'users',uid,'trips',tripId),{editors:newEditors,viewers:newViewers});
       await setDoc(doc(db,'sharedTrips',tripId),{ownerUid:uid,tripId,editors:newEditors,viewers:newViewers});
       setShareStatus('✅ 已新增成員'); setNewShareEmail('');
@@ -520,30 +556,49 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
     ? { ...i, shoppingList: (i.shoppingList || []).map(s => s.id === sId ? { ...s, checked: !s.checked } : s) }
     : i));
 
-  // ─── CSV Export ─────────────────────────────────────────────────────────────
   const exportCSV = () => {
-    const rows = [['日期','標題','類別','付款人','分攤','金額','幣別', baseCurrency+'換算']];
+    const tripDateInfo = tripStartDate&&tripEndDate ? `${tripStartDate} ~ ${tripEndDate}` : tripStartDate||'未設定';
+    let csv = `\uFEFF旅程名稱,${tripName}\n旅行日期,${tripDateInfo}\n基準幣別,${baseCurrency}\n\n`;
+    csv += '日期/時間,關聯行程,分類,描述,原始金額,幣別,換算金額('+baseCurrency+'),付款人,' + users.map(u=>`[${u}]需付(${baseCurrency})`).join(',') + '\n';
     expenses.forEach(exp => {
-      const base = exp.amount * (rates[exp.currency] ?? 1);
-      rows.push([exp.date||'', exp.title, exp.category, exp.paidBy, (exp.splitWith||users).join('/'), exp.amount, exp.currency, Math.round(base)]);
+      const rel = itinerary.find(i=>i.id===exp.itineraryId);
+      const expRate=rates[exp.currency]||1, baseRate=rates[baseCurrency]||1;
+      const converted=((exp.amount*expRate)/baseRate).toFixed(2);
+      const splits=users.map(u => {
+        if(exp.splitMode==='custom') return ((exp.customSplit?.[u]||0)*(expRate/baseRate)).toFixed(2);
+        if((exp.splitAmong||[]).includes(u)) return (((exp.amount/(exp.splitAmong.length||1))*expRate/baseRate).toFixed(2));
+        return '0';
+      });
+      const row=[rel?`${rel.date} ${rel.time}`:'無',rel?rel.title:'無',exp.category||'其他',exp.description||exp.title||'',exp.amount,exp.currency,converted,exp.paidBy,...splits].map(f=>`"${String(f).replace(/"/g,'""')}"`).join(',');
+      csv+=row+'\n';
     });
-    const csv = rows.map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
-    const blob = new Blob(['\uFEFF'+csv], {type:'text/csv;charset=utf-8;'});
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a'); a.href=url; a.download=`${tripName}_費用.csv`; a.click();
-    URL.revokeObjectURL(url);
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8;'}));
+    a.download=`${tripName}-花費明細.csv`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
     showToast('已匯出 CSV ✓');
   };
 
-  // ─── Expense edit state ────────────────────────────────────────────────────
-  const [editingExpId, setEditingExpId] = useState(null);
-  const [editingExpData, setEditingExpData] = useState({});
-  const startEditExp = (exp) => { setEditingExpId(exp.id); setEditingExpData({...exp}); };
-  const saveEditExp = () => {
-    setExpenses(list => list.map(e => e.id===editingExpId ? {...editingExpData} : e));
-    setEditingExpId(null);
+  // ─── Expense state（使用 ExpenseFormModal，格式與舊版一致）────────────────────
+  const [addingExpenseFor, setAddingExpenseFor] = useState(null);
+  const [editingExpense,   setEditingExpense]   = useState(null);
+
+  const saveExpense = (exp) => {
+    lastLocalSaveTime.current = Date.now();
+    const clean = cleanForFirestore(exp);
+    if (clean.id) setExpenses(prev => prev.map(e => e.id===clean.id ? clean : e));
+    else          setExpenses(prev => [...prev, {...clean, id: crypto.randomUUID()}]);
+    setAddingExpenseFor(null);
+    setEditingExpense(null);
+    showToast(clean.id ? '✅ 已更新帳務' : '✅ 已記帳');
   };
-  const deleteExp = (id) => { setExpenses(list => list.filter(e => e.id!==id)); setEditingExpId(null); };
+
+  const deleteExpense = (id) => {
+    if (!window.confirm('確定刪除此筆紀錄？')) return;
+    lastLocalSaveTime.current = Date.now();
+    setExpenses(prev => prev.filter(e => e.id !== id));
+    showToast('🗑 已刪除');
+  };
 
   // ─── Checklist Sheet state ────────────────────────────────────────────────
   const [sheetOpen, setSheetOpen] = useState(false);
@@ -556,69 +611,6 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
     setSheetOpen(false);
   };
   React.useEffect(() => { if (sheetOpen) setTimeout(() => sheetInputRef.current?.focus(), 80); }, [sheetOpen]);
-
-  // ─── Expense Quick-add Sheet（從行程卡片觸發）────────────────────────────────
-  const [expSheet, setExpSheet]         = useState(null); // {itineraryId, title}
-  const [expSheetTitle, setExpSheetTitle] = useState('');
-  const [expSheetAmt, setExpSheetAmt]   = useState('');
-  const [expSheetCur, setExpSheetCur]   = useState(baseCurrency);
-  const [expSheetCat, setExpSheetCat]   = useState('飲食');
-  const [expSheetPaidBy, setExpSheetPaidBy] = useState('');
-  const [expSheetSplit, setExpSheetSplit]   = useState([]);
-  const expSheetAmtRef = React.useRef(null);
-
-  const openExpSheet = (item) => {
-    setExpSheet({itineraryId: item.id, sourceTitle: item.title});
-    setExpSheetTitle(item.title || '');   // 預設帶入 title，可改名
-    setExpSheetAmt('');
-    setExpSheetCur(baseCurrency);
-    setExpSheetCat(item.type==='transport' ? '交通' : '飲食');
-    setExpSheetPaidBy(users[0]||'');
-    setExpSheetSplit([...users]);
-    setSplitMode('equal');
-    setCustomAmounts({});
-  };
-  React.useEffect(() => {
-    if (expSheet) setTimeout(() => expSheetAmtRef.current?.focus(), 100);
-  }, [expSheet]);
-
-  const submitExpSheet = () => {
-    if (!expSheetAmt || parseFloat(expSheetAmt)<=0) return;
-    const splitWith = splitMode==='equal' ? [...users]
-      : splitMode==='self' ? expSheetSplit
-      : users; // custom 模式下 splitWith = 全部，金額另存
-    const newExp = {
-      id: crypto.randomUUID(),
-      itineraryId: expSheet.itineraryId,
-      title: expSheetTitle.trim() || expSheet.sourceTitle,
-      amount: parseFloat(expSheetAmt),
-      currency: expSheetCur,
-      category: expSheetCat,
-      paidBy: expSheetPaidBy,
-      splitWith: splitWith.length>0 ? splitWith : [expSheetPaidBy],
-      splitMode,
-      customAmounts: splitMode==='custom' ? {...customAmounts} : undefined,
-      date: currentDate || new Date().toISOString().split('T')[0],
-    };
-    setExpenses(list => [...list, newExp]);
-    setExpSheet(null);
-    setSplitMode('equal');
-    setCustomAmounts({});
-    showToast('已記帳 ✓');
-  };
-
-  const toggleSplitUser = (u) => setExpSheetSplit(prev =>
-    prev.includes(u) ? prev.filter(x=>x!==u) : [...prev, u]
-  );
-
-  // 分攤模式：'equal'=平分 | 'custom'=自訂 | 'self'=各付各的
-  const [splitMode, setSplitMode] = useState('equal');
-  const [customAmounts, setCustomAmounts] = useState({});
-  const openExpSheetWithMode = (item) => {
-    openExpSheet(item);
-    setSplitMode('equal');
-    setCustomAmounts({});
-  };
 
   // 左滑刪除：統一 swipe state（key=id, val=type）
   const [swipeMap, setSwipeMap] = useState({});
@@ -796,11 +788,13 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
               {mode==='itinerary' && (
                 <button
                   onClick={()=>{ setIsEditMode(v=>!v); setMovingItemId(null); setFabOpen(false); setSwipedId(null); }}
-                  className="px-3 py-1.5 rounded-xl text-xs font-black transition-all"
-                  style={isEditMode
-                    ? {background:C.primary, color:'#fff'}
-                    : {background:C.primaryLight, color:C.primary}}>
-                  {isEditMode ? '完成' : '編輯'}
+                  className="p-2 rounded-xl transition-all"
+                  title={isEditMode ? '切換瀏覽模式' : '切換編輯模式'}
+                  style={isEditMode ? {background:C.primary, color:'#fff'} : {background:C.primaryLight, color:C.primary}}>
+                  {isEditMode
+                    ? <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                    : <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                  }
                 </button>
               )}
               <button onClick={()=>setIsShareOpen(true)} className="p-2 rounded-full active:opacity-60" style={{color:C.muted}}>
@@ -879,101 +873,103 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
               {/* 行前清單 */}
               {listTab==='pretrip' && (
                 <div>
-                  {/* 未完成 */}
-                  {checklist.filter(i=>!i.checked).map((item,idx,arr)=>(
+                  {/* ── 購票提醒區塊（item 4）── */}
+                  {(() => {
+                    const today = new Date(); today.setHours(0,0,0,0);
+                    const ticketItems = checklist.filter(i=>i.type==='ticket');
+                    const pendingTickets = ticketItems.filter(i=>!i.checked);
+                    const doneTickets = ticketItems.filter(i=>i.checked);
+                    if (!ticketItems.length) return null;
+                    const DeadlineBadge = (item) => {
+                      if (!item.ticketDeadline) return null;
+                      const dl = new Date(item.ticketDeadline); dl.setHours(0,0,0,0);
+                      const diff = Math.round((dl-today)/(1000*60*60*24));
+                      if (diff < 0) return <span className="text-[10px] font-black px-2 py-0.5 rounded-full shrink-0" style={{background:'#FFF0F0',color:C.danger}}>已逾期</span>;
+                      if (diff <= 30) return <span className="text-[10px] font-black px-2 py-0.5 rounded-full shrink-0" style={{background:C.warningLight,color:C.warning}}>截止 {item.ticketDeadline.slice(5).replace('-','/')}（{diff}天）</span>;
+                      return <span className="text-[10px] px-2 py-0.5 rounded-full shrink-0" style={{background:'#F4F7FA',color:C.muted}}>截止 {item.ticketDeadline.slice(5).replace('-','/')}</span>;
+                    };
+                    return (
+                      <div>
+                        <div className="flex items-center gap-2 px-4 pt-3 pb-2">
+                          <Ticket size={13} style={{color:C.warning}}/>
+                          <span className="text-[11px] font-black uppercase tracking-widest" style={{color:C.warning}}>購票提醒</span>
+                          {pendingTickets.length>0 && <span className="text-[10px] font-black px-1.5 py-0.5 rounded-full" style={{background:C.warningLight,color:C.warning}}>{pendingTickets.length}</span>}
+                        </div>
+                        {pendingTickets.map(item=>(
+                          <div key={item.id} className="flex items-center gap-3 px-4 py-3.5" style={{borderBottom:`1px solid ${C.border}`, background:C.warningLight}}>
+                            <button onClick={()=>toggleChecklist(item.id)} className="w-6 h-6 rounded-full border-2 flex items-center justify-center shrink-0" style={{borderColor:C.warning,background:'transparent'}}>
+                              <Ticket size={11} style={{color:C.warning}}/>
+                            </button>
+                            <span className="flex-1 text-sm font-medium" style={{color:C.ink}}>{item.text}</span>
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              {DeadlineBadge(item)}
+                              {!readOnly&&<button onClick={()=>deleteChecklistItem(item.id)} className="p-1" style={{color:C.muted}}><Trash2 size={13}/></button>}
+                            </div>
+                          </div>
+                        ))}
+                        {doneTickets.length>0 && (
+                          <>
+                            <button onClick={()=>setShowDoneTickets(v=>!v)} className="flex items-center gap-2 px-4 py-2.5 w-full text-xs font-bold" style={{color:C.muted,borderBottom:`1px solid ${C.border}`}}>
+                              <ChevronDown size={13} className={`transition-transform ${showDoneTickets?'rotate-180':''}`}/>已完成購票 ({doneTickets.length})
+                            </button>
+                            {showDoneTickets && doneTickets.map(item=>(
+                              <div key={item.id} className="flex items-center gap-3 px-4 py-3.5" style={{borderBottom:`1px solid ${C.border}`,opacity:0.5}}>
+                                <div className="w-6 h-6 rounded-full flex items-center justify-center shrink-0" style={{background:'#4ade80'}}><Check size={12} color="#fff"/></div>
+                                <span className="flex-1 text-sm line-through" style={{color:C.muted}}>{item.text}</span>
+                              </div>
+                            ))}
+                          </>
+                        )}
+                        <div className="h-px" style={{background:C.border}}/>
+                      </div>
+                    );
+                  })()}
+
+                  {/* 一般清單未完成 */}
+                  {checklist.filter(i=>!i.checked&&i.type!=='ticket').map((item)=>(
                     <div key={item.id} style={{borderBottom:`1px solid ${C.border}`, overflow:'hidden', position:'relative'}}>
-                      {/* 左滑刪除底層 */}
-                      <div className="absolute inset-y-0 right-0 flex items-center px-4"
-                        style={{background:C.danger, width:'80px', justifyContent:'center'}}>
+                      <div className="absolute inset-y-0 right-0 flex items-center px-4" style={{background:C.danger, width:'80px', justifyContent:'center'}}>
                         <Trash2 size={18} color="#fff"/>
                       </div>
-                      {/* 主列（可左滑） */}
                       <div className="flex items-center gap-3 px-4 py-3.5 bg-white"
-                        style={{
-                          transform: swipeMap[item.id] ? 'translateX(-80px)' : 'translateX(0)',
-                          transition: 'transform 0.2s ease',
-                          position:'relative', zIndex:1,
-                        }}
+                        style={{transform: swipeMap[item.id] ? 'translateX(-80px)' : 'translateX(0)', transition: 'transform 0.2s ease', position:'relative', zIndex:1}}
                         onPointerDown={e => { e._sx = e.clientX; }}
-                        onPointerUp={e => {
-                          const dx = e.clientX - (e._sx||e.clientX);
-                          if (dx < -40) openSwipe(item.id);
-                          else if (dx > 10) closeSwipe(item.id);
-                        }}>
+                        onPointerUp={e => { const dx = e.clientX - (e._sx||e.clientX); if (dx < -40) openSwipe(item.id); else if (dx > 10) closeSwipe(item.id); }}>
                         <button onClick={()=>{ closeAllSwipe(); toggleChecklist(item.id); }}
-                          className="w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 active:scale-90 transition-transform"
+                          className="w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0"
                           style={{borderColor:C.muted, background:'transparent'}}/>
                         {editingCheckId===item.id ? (
-                          <input autoFocus value={editingCheckText}
-                            onChange={e=>setEditingCheckText(e.target.value)}
-                            onBlur={saveEditCheck}
-                            onKeyDown={e=>e.key==='Enter'&&saveEditCheck()}
-                            className="flex-1 text-sm font-medium border-b bg-transparent"
-                            style={{color:C.ink, borderColor:C.primary}}/>
+                          <input autoFocus value={editingCheckText} onChange={e=>setEditingCheckText(e.target.value)} onBlur={saveEditCheck} onKeyDown={e=>e.key==='Enter'&&saveEditCheck()} className="flex-1 text-sm font-medium border-b bg-transparent" style={{color:C.ink, borderColor:C.primary}}/>
                         ) : (
-                          <span className="flex-1 text-sm font-medium" style={{color:C.ink}}
-                            onClick={()=>closeAllSwipe()}>
-                            {item.text}
-                          </span>
+                          <span className="flex-1 text-sm font-medium" style={{color:C.ink}} onClick={()=>closeAllSwipe()}>{item.text}</span>
                         )}
                         {!readOnly && (
                           <div className="flex items-center gap-0.5 shrink-0">
-                            <button onClick={()=>{ closeAllSwipe(); startEditCheck(item); }}
-                              className="p-1.5" style={{color:C.muted}}>
-                              <Edit2 size={13}/>
-                            </button>
-                            <button onClick={()=>{ closeSwipe(item.id); deleteChecklistItem(item.id); }}
-                              className="p-1.5" style={{color:swipeMap[item.id]?C.danger:C.border}}>
-                              <Trash2 size={13}/>
-                            </button>
+                            <button onClick={()=>{ closeAllSwipe(); startEditCheck(item); }} className="p-1.5" style={{color:C.muted}}><Edit2 size={13}/></button>
+                            <button onClick={()=>{ closeSwipe(item.id); deleteChecklistItem(item.id); }} className="p-1.5" style={{color:swipeMap[item.id]?C.danger:C.border}}><Trash2 size={13}/></button>
                           </div>
                         )}
                       </div>
-                      {/* 滑開後點刪除觸發 */}
-                      {swipeMap[item.id] && (
-                        <button className="absolute inset-y-0 right-0 flex items-center justify-center"
-                          style={{width:'80px', zIndex:2}}
-                          onClick={()=>{ closeSwipe(item.id); deleteChecklistItem(item.id); }}/>
-                      )}
+                      {swipeMap[item.id] && <button className="absolute inset-y-0 right-0 flex items-center justify-center" style={{width:'80px', zIndex:2}} onClick={()=>{ closeSwipe(item.id); deleteChecklistItem(item.id); }}/>}
                     </div>
                   ))}
 
-                  {/* 已完成摺疊 */}
-                  {checkDone>0 && (
+                  {/* 已完成一般清單 */}
+                  {checklist.filter(i=>i.checked&&i.type!=='ticket').length>0 && (
                     <>
-                      <button onClick={()=>setShowDoneRegular(v=>!v)}
-                        className="flex items-center gap-2 px-4 py-3.5 w-full text-sm font-bold"
-                        style={{color:C.muted, borderBottom:`1px solid ${C.border}`}}>
+                      <button onClick={()=>setShowDoneRegular(v=>!v)} className="flex items-center gap-2 px-4 py-3.5 w-full text-sm font-bold" style={{color:C.muted, borderBottom:`1px solid ${C.border}`}}>
                         <ChevronDown size={15} className={`transition-transform ${showDoneRegular?'rotate-180':''}`}/>
-                        已完成 ({checkDone})
+                        已完成 ({checklist.filter(i=>i.checked&&i.type!=='ticket').length})
                       </button>
-                      {showDoneRegular && checklist.filter(i=>i.checked).map(item=>(
-                        <div key={item.id} className="flex items-center gap-3 px-4 py-3.5"
-                          style={{borderBottom:`1px solid ${C.border}`, opacity:0.5}}>
-                          <button onClick={()=>toggleChecklist(item.id)}
-                            className="w-5 h-5 rounded-full flex items-center justify-center shrink-0"
-                            style={{background:C.primary}}>
-                            <Check size={11} color="#fff"/>
-                          </button>
+                      {showDoneRegular && checklist.filter(i=>i.checked&&i.type!=='ticket').map(item=>(
+                        <div key={item.id} className="flex items-center gap-3 px-4 py-3.5" style={{borderBottom:`1px solid ${C.border}`, opacity:0.5}}>
+                          <button onClick={()=>toggleChecklist(item.id)} className="w-5 h-5 rounded-full flex items-center justify-center shrink-0" style={{background:C.primary}}><Check size={11} color="#fff"/></button>
                           <span className="flex-1 text-sm line-through" style={{color:C.muted}}>{item.text}</span>
-                          {!readOnly && (
-                            <div className="flex items-center gap-0.5 shrink-0">
-                              <button onClick={()=>startEditCheck(item)} className="p-1.5" style={{color:C.muted}}>
-                                <Edit2 size={13}/>
-                              </button>
-                              <button onClick={()=>deleteChecklistItem(item.id)} className="p-1.5" style={{color:C.border}}>
-                                <Trash2 size={13}/>
-                              </button>
-                            </div>
-                          )}
                         </div>
                       ))}
                     </>
                   )}
-
-                  {checkTotal===0 && (
-                    <div className="py-16 text-center text-sm" style={{color:C.muted}}>尚無清單項目，點右下＋新增</div>
-                  )}
+                  {checkTotal===0 && <div className="py-16 text-center text-sm" style={{color:C.muted}}>尚無清單項目，點右下＋新增</div>}
                 </div>
               )}
 
@@ -992,9 +988,7 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                         <div className="px-4 py-3 space-y-3">
                           {item.shoppingList.map(s=>(
                             <div key={s.id} className="flex items-center gap-3">
-                              <button onClick={()=>toggleShop(item.id,s.id)}
-                                className="w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 transition-all"
-                                style={s.checked?{background:C.primary,borderColor:C.primary}:{borderColor:C.muted}}>
+                              <button onClick={()=>toggleShop(item.id,s.id)} className="w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 transition-all" style={s.checked?{background:C.primary,borderColor:C.primary}:{borderColor:C.muted}}>
                                 {s.checked && <Check size={11} color="#fff"/>}
                               </button>
                               <span className="flex-1 text-sm font-medium" style={{color:s.checked?C.muted:C.ink, textDecoration:s.checked?'line-through':'none'}}>{s.text}</span>
@@ -1007,11 +1001,75 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                 </div>
               )}
 
-              {/* 收藏景點 */}
+              {/* 收藏景點（item 5）*/}
               {listTab==='spots' && (
-                <div className="py-16 flex flex-col items-center gap-3" style={{color:C.muted}}>
-                  <Star size={44} opacity={0.2}/>
-                  <p className="text-sm font-medium">尚無收藏景點</p>
+                <div>
+                  {!readOnly && (
+                    <div className="px-4 pt-4 pb-2 space-y-2">
+                      <input placeholder="景點名稱..." className="w-full border rounded-2xl px-4 py-3 text-sm font-bold" style={{borderColor:C.border,color:C.ink,background:C.card}} value={savedSpotName} onChange={e=>setSavedSpotName(e.target.value)}/>
+                      <textarea placeholder="備註（在哪看到的、有什麼特色…）" className="w-full border rounded-2xl px-4 py-2.5 text-sm resize-none" rows={2} style={{borderColor:C.border,color:C.ink,background:C.card}} value={savedSpotNote} onChange={e=>setSavedSpotNote(e.target.value)}/>
+                      <input type="url" placeholder="來源連結 https://..." className="w-full border rounded-2xl px-4 py-2.5 text-sm" style={{borderColor:C.border,color:C.ink,background:C.card}} value={savedSpotUrl} onChange={e=>setSavedSpotUrl(e.target.value)}/>
+                      <button onClick={()=>{
+                        if(!savedSpotName.trim()) return;
+                        setSavedSpots(p=>[...p,{id:crypto.randomUUID(),name:savedSpotName.trim(),note:savedSpotNote.trim(),url:savedSpotUrl.trim(),createdAt:new Date().toISOString()}]);
+                        setSavedSpotName('');setSavedSpotNote('');setSavedSpotUrl('');
+                        showToast('已收藏 ✓');
+                      }} className="w-full py-3 rounded-2xl text-sm font-black text-white" style={{background:savedSpotName.trim()?C.primary:C.muted}}>
+                        + 加入收藏
+                      </button>
+                    </div>
+                  )}
+                  {savedSpots.length===0 && (
+                    <div className="py-12 text-center flex flex-col items-center gap-3" style={{color:C.muted}}>
+                      <Star size={44} opacity={0.2}/>
+                      <p className="text-sm font-medium">尚無收藏景點</p>
+                      <p className="text-xs">在網路上看到不錯的景點，先存在這裡</p>
+                    </div>
+                  )}
+                  {savedSpots.map(spot=>(
+                    <div key={spot.id} style={{borderBottom:`1px solid ${C.border}`}}>
+                      <div className="flex items-center gap-3 px-4 py-3.5">
+                        <button onClick={()=>setExpandedSpotId(expandedSpotId===spot.id?null:spot.id)} className="flex-1 text-left flex items-center gap-2 min-w-0">
+                          <Star size={14} style={{color:C.warning, fill:C.warning, flexShrink:0}}/>
+                          <span className="text-sm font-bold truncate" style={{color:C.ink}}>{spot.name}</span>
+                          {(spot.note||spot.url)&&<ChevronDown size={13} className={`transition-transform shrink-0 ${expandedSpotId===spot.id?'rotate-180':''}`} style={{color:C.muted}}/>}
+                        </button>
+                        <div className="flex items-center gap-1 shrink-0">
+                          {!readOnly&&(
+                            <button onClick={()=>setAddingSpotToDate(addingSpotToDate===spot.id?null:spot.id)}
+                              className="text-[11px] font-black px-2.5 py-1.5 rounded-full"
+                              style={{background:addingSpotToDate===spot.id?C.primary:C.primaryLight, color:addingSpotToDate===spot.id?'#fff':C.primary}}>
+                              + 行程
+                            </button>
+                          )}
+                          {!readOnly&&<button onClick={()=>setSavedSpots(p=>p.filter(s=>s.id!==spot.id))} className="p-1.5" style={{color:C.muted}}><Trash2 size={14}/></button>}
+                        </div>
+                      </div>
+                      {expandedSpotId===spot.id&&(spot.note||spot.url)&&(
+                        <div className="px-4 pb-3 space-y-1">
+                          {spot.note&&<p className="text-xs" style={{color:C.body}}>{spot.note}</p>}
+                          {spot.url&&<a href={spot.url} target="_blank" rel="noreferrer" className="text-xs underline truncate block" style={{color:C.primary}}>{spot.url}</a>}
+                        </div>
+                      )}
+                      {addingSpotToDate===spot.id&&(
+                        <div className="px-4 pb-3">
+                          <p className="text-xs font-black mb-2" style={{color:C.primary}}>選擇加入的日期：</p>
+                          <div className="flex flex-wrap gap-2">
+                            {(tripDateRange.length>0?tripDateRange:[...new Set(itinerary.map(i=>i.date))].filter(Boolean).sort()).map((d,i)=>{
+                              const dt=new Date(d);
+                              return <button key={d} onClick={()=>{
+                                setItinerary(p=>[...p,{id:crypto.randomUUID(),type:'place',date:d,time:'',title:spot.name,location:'',notes:spot.note||'',website:spot.url||'',transport:'',shoppingList:[],tickets:'',lastEditedBy:currentUserName||'',lastEditedAt:new Date().toISOString()}]);
+                                setSavedSpots(p=>p.filter(s=>s.id!==spot.id));
+                                setAddingSpotToDate(null);
+                                showToast('✅ 已加入行程');
+                              }} className="px-3 py-1.5 rounded-xl text-xs font-bold" style={{background:C.primaryLight,color:C.primary}}>Day{i+1} {dt.getMonth()+1}/{dt.getDate()}</button>;
+                            })}
+                          </div>
+                          <button onClick={()=>setAddingSpotToDate(null)} className="mt-2 text-xs" style={{color:C.muted}}>取消</button>
+                        </div>
+                      )}
+                    </div>
+                  ))}
                 </div>
               )}
             </div>
@@ -1093,7 +1151,13 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
 
               {/* 各天 section */}
               {(isEditMode ? sortedDates : (currentDate ? [currentDate] : [])).map((dateKey, dateKeyIdx) => {
-                const accom      = accommodations.find(a => a.date === dateKey);
+                // 住宿：找 checkIn <= dateKey < checkOut 的住宿（支援舊格式的 date 欄位）
+                const accom = accommodations.find(a => {
+                  const ci = a.checkIn || a.date || '';
+                  const co = a.checkOut || '';
+                  if (ci && co) return dateKey >= ci && dateKey < co;
+                  return ci === dateKey;
+                });
                 const shopItems  = itinerary.filter(i => i.date === dateKey && i.shoppingList?.length > 0);
                 const isLastDay  = dateKeyIdx === sortedDates.length - 1;
                 const dayItems   = itinerary.filter(i => i.date === dateKey);
@@ -1121,7 +1185,9 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                             <p className="text-[10px] font-bold" style={{color:C.primary, opacity:0.7}}>今晚住宿</p>
                             <p className="text-xs font-black truncate" style={{color:C.primary}}>{accom.name}</p>
                           </div>
-                          <button onClick={()=>showToast('導航待接入')} style={{color:C.primary, opacity:0.6}}>
+                          <button
+                            onClick={()=>{ const dest = encodeURIComponent(accom.location||accom.name); window.open(`https://www.google.com/maps/dir/?api=1&destination=${dest}`,'_blank'); }}
+                            style={{color:C.primary, opacity:0.6}}>
                             <Navigation size={12}/>
                           </button>
                         </div>
@@ -1204,6 +1270,22 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                                   {item.duration && (
                                     <p className="text-xs mt-0.5" style={{color:C.muted}}>{item.duration}</p>
                                   )}
+                                  {/* 購票狀態顯示（item 11）*/}
+                                  {item.needTicket && (()=>{
+                                    const today = new Date(); today.setHours(0,0,0,0);
+                                    const tItem = checklist.find(c=>c.type==='ticket'&&c.itineraryId===item.id);
+                                    if (tItem?.checked) return <p className="text-xs mt-1 flex items-center gap-1" style={{color:'#4ade80'}}><Check size={11}/>已購票</p>;
+                                    if (item.ticketDeadline) {
+                                      const dl = new Date(item.ticketDeadline); dl.setHours(0,0,0,0);
+                                      const diff = Math.round((dl-today)/(1000*60*60*24));
+                                      const color = diff<0?C.danger:diff<=30?C.warning:C.muted;
+                                      return <p className="text-xs mt-1 font-bold flex items-center gap-1" style={{color}}>
+                                        <Ticket size={11}/>⚠️ 需購票 {diff<0?'已逾期':`截止 ${item.ticketDeadline.slice(5).replace('-','/')}（${diff}天）`}
+                                        <button onClick={()=>{setMode('checklist');setListTab('pretrip');}} className="underline ml-1 text-[10px]" style={{color}}>查看</button>
+                                      </p>;
+                                    }
+                                    return <p className="text-xs mt-1" style={{color:C.muted}}>⚠️ 需提前購票</p>;
+                                  })()}
                                 </div>
 
                                 {/* 右側：編輯 → ... */}
@@ -1221,7 +1303,7 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                               {/* 記一筆：直接顯示在卡片底部（瀏覽模式）*/}
                               {!isEditMode && !readOnly && (
                                 <div className="flex" style={{borderTop:`1px solid ${C.primary}22`}}>
-                                  <button onClick={()=>openExpSheetWithMode(item)}
+                                  <button onClick={()=>setAddingExpenseFor(item)}
                                     className="flex-1 flex items-center justify-center gap-1.5 py-2.5 text-xs font-bold"
                                     style={{color:C.primary}}>
                                     <DollarSign size={13}/>記一筆
@@ -1339,7 +1421,7 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                               {!isEditMode && (
                                 <div className="flex" style={{borderTop:`1px solid ${C.border}`}}>
                                   {!readOnly && (
-                                    <button onClick={()=>openExpSheetWithMode(item)}
+                                    <button onClick={()=>setAddingExpenseFor(item)}
                                       className="flex-1 flex items-center justify-center gap-1.5 py-2.5 text-xs font-bold active:opacity-70"
                                       style={{color:C.primary}}>
                                       <DollarSign size={14}/>記一筆
@@ -1467,16 +1549,20 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
               <p className="text-4xl font-black mb-4 tracking-tighter">
                 {baseCurrency} {Math.round(financeSummary.total).toLocaleString()}
               </p>
-              {/* 每人花費：只顯示名字 + 消費金額 + 幣別 */}
+              {/* 每人花費：顯示已付、應付、差額 */}
               <div className="grid grid-cols-2 gap-2">
                 {users.map(u => {
                   const s = financeSummary.userStats[u];
                   if (!s) return null;
+                  const bal = Math.round(s.paid - s.consumed);
                   return (
                     <div key={u} className="rounded-2xl p-3" style={{background:'rgba(255,255,255,0.12)'}}>
                       <p className="text-xs font-medium truncate mb-1" style={{color:'rgba(255,255,255,0.55)'}}>{u}</p>
                       <p className="text-base font-black text-white leading-tight">
                         {baseCurrency} {Math.round(s.consumed).toLocaleString()}
+                      </p>
+                      <p className="text-[11px] mt-0.5" style={{color: bal>0?'#86efac':bal<0?'#fca5a5':'rgba(255,255,255,0.5)'}}>
+                        {bal>0?`+${bal.toLocaleString()} 待收`:bal<0?`${bal.toLocaleString()} 待付`:'已結清'}
                       </p>
                     </div>
                   );
@@ -1526,220 +1612,44 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
               <div className="rounded-2xl border overflow-hidden" style={{background:C.card, borderColor:C.border, boxShadow:C.cardShadow}}>
                 <div className="flex items-center justify-between px-4 py-3 border-b" style={{borderColor:C.border}}>
                   <p className="text-[11px] font-black uppercase tracking-widest" style={{color:C.muted}}>費用明細</p>
-                  {/* 只保留 CSV 匯出 */}
                   <button onClick={exportCSV} className="p-2 rounded-xl active:opacity-70"
                     style={{background:'#F4F7FA', color:C.muted}} title="匯出 CSV">
                     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                      <polyline points="7 10 12 15 17 10"/>
-                      <line x1="12" y1="15" x2="12" y2="3"/>
+                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
                     </svg>
                   </button>
                 </div>
-
                 {expenses.length===0
                   ? <div className="px-4 py-10 text-center text-sm font-medium" style={{color:C.muted}}>尚無費用記錄，點右下＋新增</div>
-                  : expenses.map((exp,idx,arr)=>{
+                  : expenses.map((exp, idx, arr) => {
+                      const rel = itinerary.find(i=>i.id===exp.itineraryId);
                       const isBase = exp.currency===baseCurrency;
-                      const converted = Math.round(exp.amount*(rates[exp.currency]??1));
-                      const isEditing = editingExpId===exp.id;
+                      const converted = Math.round((exp.amount*(rates[exp.currency]||1))/(rates[baseCurrency]||1));
                       return (
-                        <div key={exp.id} className="px-4 py-4" style={{borderBottom:idx<arr.length-1?`1px solid ${C.border}`:'none'}}>
-                          {isEditing ? (
-                            /* 編輯模式 */
-                            (() => {
-                              const ed = editingExpData;
-                              const setEd = (f, v) => setEditingExpData(d => ({...d, [f]: v}));
-                              const edSplitMode = ed.splitMode || 'equal';
-                              const edCustom = ed.customAmounts || {};
-                              const edSplit = ed.splitWith || users;
-                              return (
-                                <div className="space-y-3 py-1">
-                                  {/* 名稱 */}
-                                  <input value={ed.title||''} onChange={e=>setEd('title',e.target.value)}
-                                    placeholder="費用名稱"
-                                    className="w-full border rounded-xl px-3 py-2.5 text-sm font-bold"
-                                    style={{borderColor:C.primary+'66', color:C.ink}}/>
-
-                                  {/* 金額 + 幣別 */}
-                                  <div className="flex gap-2">
-                                    <input type="number" value={ed.amount||''} onChange={e=>setEd('amount',parseFloat(e.target.value)||0)}
-                                      placeholder="金額" className="flex-1 border rounded-xl px-3 py-2 text-sm"
-                                      style={{borderColor:C.border, color:C.ink}}/>
-                                    <select value={ed.currency||baseCurrency} onChange={e=>setEd('currency',e.target.value)}
-                                      className="border rounded-xl px-2 py-2 text-sm" style={{borderColor:C.border, color:C.body}}>
-                                      {Object.keys(rates).map(c=><option key={c} value={c}>{c}</option>)}
-                                    </select>
-                                  </div>
-                                  {ed.amount>0 && ed.currency && ed.currency!==baseCurrency && (
-                                    <div className="flex items-center gap-2 px-3 py-2 rounded-xl" style={{background:'#F0F5F9'}}>
-                                      <span className="text-xs" style={{color:C.muted}}>≈</span>
-                                      <span className="text-sm font-black" style={{color:'#B6C9CF'}}>
-                                        {baseCurrency} {Math.round(ed.amount*(rates[ed.currency]??1)).toLocaleString()}
-                                      </span>
-                                      <span className="text-xs ml-auto" style={{color:C.muted}}>
-                                        1 {ed.currency} = {rates[ed.currency]??'?'} {baseCurrency}
-                                      </span>
-                                    </div>
-                                  )}
-
-                                  {/* 付款人 */}
-                                  <div>
-                                    <p className="text-[10px] font-black uppercase tracking-widest mb-1.5" style={{color:C.muted}}>誰付款</p>
-                                    <div className="flex gap-2 flex-wrap">
-                                      {users.map(u=>(
-                                        <button key={u} onClick={()=>setEd('paidBy',u)}
-                                          className="px-3 py-1.5 rounded-xl text-xs font-bold"
-                                          style={ed.paidBy===u
-                                            ? {background:C.primary, color:'#fff'}
-                                            : {background:'#F4F7FA', color:C.body, border:`1px solid ${C.border}`}}>
-                                          {u}
-                                        </button>
-                                      ))}
-                                    </div>
-                                  </div>
-
-                                  {/* 分攤方式 */}
-                                  {users.length > 1 && (
-                                    <div>
-                                      <p className="text-[10px] font-black uppercase tracking-widest mb-1.5" style={{color:C.muted}}>分攤方式</p>
-                                      <div className="flex gap-2 mb-2">
-                                        {[['equal','平分'],['custom','自訂'],['self','各付各的']].map(([m,label])=>(
-                                          <button key={m} onClick={()=>{
-                                            setEd('splitMode', m);
-                                            if (m==='equal') setEd('splitWith', [...users]);
-                                            else if (m==='self') setEd('splitWith', [ed.paidBy||users[0]]);
-                                          }}
-                                            className="flex-1 py-1.5 rounded-xl text-xs font-black"
-                                            style={edSplitMode===m
-                                              ? {background:C.primary, color:'#fff'}
-                                              : {background:'#F4F7FA', color:C.muted, border:`1px solid ${C.border}`}}>
-                                            {label}
-                                          </button>
-                                        ))}
-                                      </div>
-
-                                      {/* 平分：每人金額預覽 */}
-                                      {edSplitMode==='equal' && ed.amount>0 && (
-                                        <p className="text-xs mb-2" style={{color:C.muted}}>
-                                          每人 {ed.currency||baseCurrency} {(ed.amount/users.length).toFixed(0)}
-                                        </p>
-                                      )}
-
-                                      {/* 自訂 */}
-                                      {edSplitMode==='custom' && (
-                                        <div className="space-y-1.5 mb-2">
-                                          {users.map(u=>(
-                                            <div key={u} className="flex items-center gap-2">
-                                              <span className="text-xs font-bold w-14 shrink-0" style={{color:C.ink}}>{u}</span>
-                                              <input type="number" inputMode="decimal"
-                                                value={edCustom[u]||''}
-                                                onChange={e=>setEd('customAmounts',{...edCustom,[u]:e.target.value})}
-                                                placeholder="0"
-                                                className="flex-1 border rounded-xl px-2.5 py-1.5 text-xs"
-                                                style={{borderColor:C.border, color:C.ink}}/>
-                                              <span className="text-xs shrink-0" style={{color:C.muted}}>{ed.currency||baseCurrency}</span>
-                                            </div>
-                                          ))}
-                                        </div>
-                                      )}
-
-                                      {/* 各付各的：勾選參與者 */}
-                                      {edSplitMode==='self' && (
-                                        <div className="flex gap-2 flex-wrap">
-                                          {users.map(u=>(
-                                            <button key={u} onClick={()=>{
-                                              const cur = edSplit.includes(u)
-                                                ? edSplit.filter(x=>x!==u)
-                                                : [...edSplit, u];
-                                              setEd('splitWith', cur.length>0 ? cur : [u]);
-                                            }}
-                                              className="flex items-center gap-1 px-3 py-1.5 rounded-xl text-xs font-bold"
-                                              style={edSplit.includes(u)
-                                                ? {background:C.primaryLight, color:C.primary, border:`1.5px solid ${C.primary}`}
-                                                : {background:'#F4F7FA', color:C.muted, border:`1px solid ${C.border}`}}>
-                                              {edSplit.includes(u) && <Check size={11}/>}
-                                              {u}
-                                            </button>
-                                          ))}
-                                        </div>
-                                      )}
-
-                                      {/* 平分參與者顯示 */}
-                                      {edSplitMode==='equal' && (
-                                        <div className="flex gap-2 flex-wrap">
-                                          {users.map(u=>(
-                                            <button key={u} onClick={()=>{
-                                              const cur = edSplit.includes(u)
-                                                ? edSplit.filter(x=>x!==u)
-                                                : [...edSplit, u];
-                                              setEd('splitWith', cur.length>0 ? cur : [u]);
-                                            }}
-                                              className="flex items-center gap-1 px-3 py-1.5 rounded-xl text-xs font-bold"
-                                              style={edSplit.includes(u)
-                                                ? {background:C.primaryLight, color:C.primary, border:`1.5px solid ${C.primary}`}
-                                                : {background:'#F4F7FA', color:C.muted, border:`1px solid ${C.border}`}}>
-                                              {edSplit.includes(u) && <Check size={11}/>}
-                                              {u}
-                                            </button>
-                                          ))}
-                                        </div>
-                                      )}
-                                    </div>
-                                  )}
-
-                                  {/* 按鈕：取消 + 儲存（主要），刪除（次要小字在最下） */}
-                                  <div className="flex gap-2">
-                                    <button onClick={()=>setEditingExpId(null)} className="flex-1 py-2.5 rounded-xl text-sm font-bold" style={{background:'#F4F7FA', color:C.muted}}>取消</button>
-                                    <button onClick={saveEditExp} className="flex-1 py-2.5 rounded-xl text-sm font-black text-white" style={{background:C.primary}}>儲存</button>
-                                  </div>
-                                  <button onClick={()=>{
-                                    if(window.confirm('確定要刪除這筆費用嗎？')) deleteExp(ed.id);
-                                  }} className="w-full py-2 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5"
-                                    style={{background:'transparent', color:C.danger}}>
-                                    <Trash2 size={13}/>刪除這筆費用
-                                  </button>
-                                </div>
-                              );
-                            })()
-                          ) : (
-                            /* 顯示模式 */
-                            <div>
-                              <div className="flex items-start justify-between gap-2 mb-1.5">
-                                <div className="flex-1 min-w-0">
-                                  <p className="text-sm font-black" style={{color:C.ink}}>{exp.title}</p>
-                                  {/* 分攤 pills */}
-                                  <div className="flex items-center gap-1 mt-1.5 flex-wrap">
-                                    {(exp.splitWith||[exp.paidBy]).map(u=>(
-                                      <span key={u} className="text-[10px] font-bold px-2 py-0.5 rounded-full"
-                                        style={{background:u===exp.paidBy?C.primaryLight:'#F4F7FA', color:u===exp.paidBy?C.primary:C.muted}}>
-                                        {u}{u===exp.paidBy?' 付':''}
-                                      </span>
-                                    ))}
-                                  </div>
-                                </div>
-                                <div className="flex items-start gap-2 shrink-0">
-                                  <div className="text-right">
-                                    <p className="text-sm font-black" style={{color:C.ink}}>
-                                      {exp.currency} {exp.amount.toLocaleString()}
-                                    </p>
-                                    {/* 換算（非基礎幣 → B6C9CF 輔助色） */}
-                                    {!isBase && (
-                                      <p className="text-xs font-bold mt-0.5" style={{color:'#B6C9CF'}}>
-                                        ≈ {baseCurrency} {converted.toLocaleString()}
-                                      </p>
-                                    )}
-                                  </div>
-                                  {!readOnly && (
-                                    <button onClick={()=>startEditExp(exp)} className="p-1.5 rounded-lg mt-0.5" style={{background:C.primaryLight, color:C.primary}}>
-                                      <Edit2 size={13}/>
-                                    </button>
-                                  )}
-                                </div>
-                              </div>
-                              <p className="text-[10px] font-medium" style={{color:C.muted}}>{exp.category}</p>
+                        <div key={exp.id}
+                          onClick={()=>!readOnly&&setEditingExpense(exp)}
+                          className={`px-4 py-4 flex items-start gap-3 ${!readOnly?'cursor-pointer active:opacity-80':''}`}
+                          style={{borderBottom:idx<arr.length-1?`1px solid ${C.border}`:'none'}}>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-black truncate" style={{color:C.ink}}>{exp.description||exp.title||'未命名'}</p>
+                            <div className="flex flex-wrap gap-1.5 mt-1.5 items-center">
+                              <span className="text-[10px] font-black px-2 py-0.5 rounded-full" style={{background:C.primaryLight, color:C.primary}}>{exp.category||'其他'}</span>
+                              <span className="text-[11px]" style={{color:C.muted}}>付：{exp.paidBy}</span>
+                              <span className="text-[11px]" style={{color:C.muted}}>
+                                {exp.splitMode==='aa'
+                                  ? `AA×${(exp.aaSplitAmong||exp.splitAmong||[]).length}`
+                                  : exp.splitMode==='custom' ? '自訂'
+                                  : `分：${(exp.splitAmong||[]).join('/')}`
+                                }
+                              </span>
+                              {rel&&<span className="text-[11px] truncate" style={{color:C.primary}}>📍{rel.title}</span>}
                             </div>
-                          )}
+                          </div>
+                          <div className="shrink-0 text-right">
+                            <p className="text-sm font-black" style={{color:C.ink}}>{exp.currency} {exp.amount?.toLocaleString()}</p>
+                            {!isBase&&<p className="text-xs mt-0.5" style={{color:'#B6C9CF'}}>≈ {baseCurrency} {converted.toLocaleString()}</p>}
+                            {!readOnly&&<button onClick={e=>{e.stopPropagation();deleteExpense(exp.id);}} className="text-xs mt-1 block" style={{color:C.muted}}>刪除</button>}
+                          </div>
                         </div>
                       );
                     })
@@ -1794,7 +1704,7 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
             </button>
           )}
           {mode==='finance' && (
-            <button onClick={()=>showToast('新增費用 – 表單待接入')}
+            <button onClick={()=>setAddingExpenseFor({title:'一般花費'})}
               className="fab w-14 h-14 rounded-full flex items-center justify-center text-white shadow-xl"
               style={{background:C.primary, boxShadow:'0 4px 24px rgba(72,116,158,0.45)'}}>
               <Plus size={26}/>
@@ -1838,79 +1748,92 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
             <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
 
               {detailSheet.type === 'transport' ? (
-                /* ── 交通欄位 ── */
+                /* ── 交通欄位（與新增一致）── */
                 <>
-                  <div className="flex gap-3">
-                    <div className="flex-1">
-                      <p className="text-[10px] font-black uppercase tracking-widest mb-1.5" style={{color:C.muted}}>交通方式</p>
-                      <input value={detailData.transportMode||''} onChange={e=>setDetailData(d=>({...d,transportMode:e.target.value}))}
-                        placeholder="電車 / 巴士 / 飛機…"
-                        className="w-full border rounded-xl px-3 py-2.5 text-sm"
-                        style={{borderColor:C.border, color:C.ink}}/>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <p className="text-[10px] font-black uppercase tracking-widest mb-1.5" style={{color:C.muted}}>日期</p>
+                      <select className="w-full border rounded-xl px-3 py-2.5 text-sm" style={{borderColor:C.border,color:C.ink}}
+                        value={detailData.date||''} onChange={e=>setDetailData(d=>({...d,date:e.target.value}))}>
+                        <option value="">未定日期</option>
+                        {tripDateRange.map((d,i)=>{const dt=new Date(d);return<option key={d} value={d}>Day{i+1} {dt.getMonth()+1}/{dt.getDate()}</option>;})}
+                      </select>
                     </div>
                     <div>
                       <p className="text-[10px] font-black uppercase tracking-widest mb-1.5" style={{color:C.muted}}>時間</p>
                       <input type="time" value={detailData.time||''} onChange={e=>setDetailData(d=>({...d,time:e.target.value}))}
-                        className="border rounded-xl px-3 py-2.5 text-sm font-bold"
-                        style={{borderColor:C.border, color:C.primary}}/>
+                        className="w-full border rounded-xl px-3 py-2.5 text-sm font-bold" style={{borderColor:C.border,color:C.primary}}/>
                     </div>
                   </div>
 
                   <div>
-                    <p className="text-[10px] font-black uppercase tracking-widest mb-1.5" style={{color:C.muted}}>起訖站</p>
-                    <div className="flex items-center gap-2">
-                      <input value={detailData.from||''} onChange={e=>setDetailData(d=>({...d,from:e.target.value}))}
-                        placeholder="出發地"
-                        className="flex-1 border rounded-xl px-3 py-2.5 text-sm"
-                        style={{borderColor:C.border, color:C.ink}}/>
-                      <ArrowRight size={14} style={{color:C.primary, flexShrink:0}}/>
-                      <input value={detailData.to||''} onChange={e=>setDetailData(d=>({...d,to:e.target.value}))}
-                        placeholder="目的地"
-                        className="flex-1 border rounded-xl px-3 py-2.5 text-sm"
-                        style={{borderColor:C.border, color:C.ink}}/>
-                    </div>
+                    <p className="text-[10px] font-black uppercase tracking-widest mb-1.5" style={{color:C.muted}}>交通方式 *</p>
+                    <input value={detailData.transportMode||''} onChange={e=>setDetailData(d=>({...d,transportMode:e.target.value}))}
+                      placeholder="高鐵、飛機、巴士…"
+                      className="w-full border rounded-xl px-3 py-2.5 text-sm font-bold" style={{borderColor:C.border,color:C.ink}}/>
                   </div>
 
-                  <div className="flex gap-3">
-                    <div className="flex-1">
-                      <p className="text-[10px] font-black uppercase tracking-widest mb-1.5" style={{color:C.muted}}>班次 / 車次</p>
-                      <input value={detailData.title||''} onChange={e=>setDetailData(d=>({...d,title:e.target.value}))}
-                        placeholder="班次名稱"
-                        className="w-full border rounded-xl px-3 py-2.5 text-sm"
-                        style={{borderColor:C.border, color:C.ink}}/>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <p className="text-[10px] font-black uppercase tracking-widest mb-1.5" style={{color:C.muted}}>搭車地點</p>
+                      <input value={detailData.from||''} onChange={e=>setDetailData(d=>({...d,from:e.target.value}))}
+                        placeholder="台南火車站" className="w-full border rounded-xl px-3 py-2.5 text-sm" style={{borderColor:C.border,color:C.ink}}/>
                     </div>
                     <div>
-                      <p className="text-[10px] font-black uppercase tracking-widest mb-1.5" style={{color:C.muted}}>時長</p>
+                      <p className="text-[10px] font-black uppercase tracking-widest mb-1.5" style={{color:C.muted}}>下車地點</p>
+                      <input value={detailData.to||''} onChange={e=>setDetailData(d=>({...d,to:e.target.value}))}
+                        placeholder="桃園機場" className="w-full border rounded-xl px-3 py-2.5 text-sm" style={{borderColor:C.border,color:C.ink}}/>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <p className="text-[10px] font-black uppercase tracking-widest mb-1.5" style={{color:C.muted}}>票價</p>
+                      <div className="flex gap-1">
+                        <input value={detailData.price||''} onChange={e=>setDetailData(d=>({...d,price:e.target.value}))}
+                          placeholder="1190" className="flex-1 border rounded-xl px-3 py-2.5 text-sm" style={{borderColor:C.border,color:C.ink}}/>
+                        <select className="border rounded-xl px-2 py-2.5 text-xs font-bold shrink-0" style={{borderColor:C.border,color:C.body}}
+                          value={detailData.priceCurrency||baseCurrency} onChange={e=>setDetailData(d=>({...d,priceCurrency:e.target.value}))}>
+                          {Object.keys(rates).map(c=><option key={c} value={c}>{c}</option>)}
+                        </select>
+                      </div>
+                    </div>
+                    <div>
+                      <p className="text-[10px] font-black uppercase tracking-widest mb-1.5" style={{color:C.muted}}>預估時間</p>
                       <input value={detailData.duration||''} onChange={e=>setDetailData(d=>({...d,duration:e.target.value}))}
-                        placeholder="40 分鐘"
-                        className="w-28 border rounded-xl px-3 py-2.5 text-sm"
-                        style={{borderColor:C.border, color:C.ink}}/>
+                        placeholder="2小時" className="w-full border rounded-xl px-3 py-2.5 text-sm" style={{borderColor:C.border,color:C.ink}}/>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <p className="text-[10px] font-black uppercase tracking-widest mb-1.5" style={{color:C.muted}}>班次名稱（選填）</p>
+                      <input value={detailData.title||''} onChange={e=>setDetailData(d=>({...d,title:e.target.value}))}
+                        placeholder="自強號" className="w-full border rounded-xl px-3 py-2.5 text-sm" style={{borderColor:C.border,color:C.ink}}/>
+                    </div>
+                    <div>
+                      <p className="text-[10px] font-black uppercase tracking-widest mb-1.5" style={{color:C.muted}}>購票截止日</p>
+                      <input type="date" value={detailData.ticketDeadline||''} onChange={e=>setDetailData(d=>({...d,ticketDeadline:e.target.value}))}
+                        className="w-full border rounded-xl px-3 py-2.5 text-sm" style={{borderColor:C.border,color:C.ink}}/>
                     </div>
                   </div>
 
                   <div>
-                    <p className="text-[10px] font-black uppercase tracking-widest mb-1.5" style={{color:C.muted}}>票價</p>
-                    <input value={detailData.tickets||''} onChange={e=>setDetailData(d=>({...d,tickets:e.target.value}))}
-                      placeholder="JPY 920"
-                      className="w-full border rounded-xl px-3 py-2.5 text-sm"
-                      style={{borderColor:C.border, color:C.ink}}/>
+                    <p className="text-[10px] font-black uppercase tracking-widest mb-1.5" style={{color:C.muted}}>購票連結</p>
+                    <input type="url" value={detailData.url||''} onChange={e=>setDetailData(d=>({...d,url:e.target.value}))}
+                      placeholder="https://..." className="w-full border rounded-xl px-3 py-2.5 text-sm" style={{borderColor:C.border,color:C.ink}}/>
                   </div>
 
+                  <label className="flex items-center gap-3 cursor-pointer">
+                    <input type="checkbox" checked={detailData.needTicket||false} onChange={e=>setDetailData(d=>({...d,needTicket:e.target.checked}))} className="w-4 h-4 rounded"/>
+                    <span className="text-sm font-bold" style={{color:C.ink}}>需提前購票 → 自動加行前清單</span>
+                  </label>
+
                   <div>
-                    <p className="text-[10px] font-black uppercase tracking-widest mb-1.5" style={{color:C.muted}}>備注</p>
+                    <p className="text-[10px] font-black uppercase tracking-widest mb-1.5" style={{color:C.muted}}>備註</p>
                     <textarea value={detailData.notes||''} onChange={e=>setDetailData(d=>({...d,notes:e.target.value}))}
-                      placeholder="注意事項、換乘資訊…"
-                      rows={2}
-                      className="w-full border rounded-xl px-3 py-2.5 text-sm resize-none"
-                      style={{borderColor:C.border, color:C.ink}}/>
-                  </div>
-
-                  <div>
-                    <p className="text-[10px] font-black uppercase tracking-widest mb-1.5" style={{color:C.muted}}>訂票連結</p>
-                    <input value={detailData.website||''} onChange={e=>setDetailData(d=>({...d,website:e.target.value}))}
-                      placeholder="https://..."
-                      className="w-full border rounded-xl px-3 py-2.5 text-sm"
-                      style={{borderColor:C.border, color:C.ink}}/>
+                      placeholder="注意事項、換乘資訊…" rows={2}
+                      className="w-full border rounded-xl px-3 py-2.5 text-sm resize-none" style={{borderColor:C.border,color:C.ink}}/>
                   </div>
                 </>
 
@@ -2035,523 +1958,9 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
         </div>
       )}
 
-      {/* ══ EXPENSE QUICK-ADD SHEET ══ */}
-      {expSheet && (
-        <div className="fixed inset-0 z-[70] flex flex-col justify-end">
-
-          {/* 遮罩 */}
-          <div className="absolute inset-0" style={{background:'rgba(0,0,0,0.35)'}}
-            onClick={()=>setExpSheet(null)}/>
-
-          {/* Sheet 本體：max-height 限制 + flex 分層 */}
-          <div className="relative flex flex-col rounded-t-3xl"
-            style={{
-              background: C.card,
-              boxShadow: '0 -8px 40px rgba(0,0,0,0.18)',
-              maxHeight: '88dvh',   // 最多佔螢幕 88%
-            }}>
-
-            {/* ── 固定：把手 + 標題 ── */}
-            <div className="shrink-0 px-5 pt-3 pb-3"
-              style={{borderBottom:`1px solid ${C.border}`}}>
-              {/* 把手 */}
-              <div className="flex justify-center mb-3">
-                <div className="w-10 h-1 rounded-full" style={{background:C.border}}/>
-              </div>
-              {/* 標題 + 關閉 */}
-              <div className="flex items-center justify-between">
-                <p className="text-base font-black" style={{color:C.ink}}>記一筆</p>
-                <button onClick={()=>setExpSheet(null)}
-                  className="w-8 h-8 flex items-center justify-center rounded-full"
-                  style={{background:'#F4F7FA', color:C.muted}}>
-                  <X size={16}/>
-                </button>
-              </div>
-            </div>
-
-            {/* ── 可捲動內容區 ── */}
-            <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4"
-              style={{WebkitOverflowScrolling:'touch'}}>
-
-              {/* 費用名稱 */}
-              <input
-                value={expSheetTitle}
-                onChange={e=>setExpSheetTitle(e.target.value)}
-                placeholder="費用名稱"
-                className="w-full border rounded-2xl px-4 py-3 text-sm font-medium"
-                style={{borderColor: expSheetTitle ? C.primary+'66' : C.border, color:C.ink}}/>
-
-              {/* 金額列：大字輸入 + 幣別並排 */}
-              <div className="rounded-2xl border p-4 space-y-3"
-                style={{borderColor: expSheetAmt ? C.primary : C.border,
-                        boxShadow: expSheetAmt ? `0 0 0 3px ${C.primary}18` : 'none',
-                        transition: 'border-color 0.15s, box-shadow 0.15s'}}>
-                <div className="flex items-center gap-3">
-                  <input
-                    ref={expSheetAmtRef}
-                    type="number"
-                    inputMode="decimal"
-                    value={expSheetAmt}
-                    onChange={e=>setExpSheetAmt(e.target.value)}
-                    placeholder="0"
-                    className="flex-1 text-3xl font-black bg-transparent"
-                    style={{color: expSheetAmt ? C.ink : C.muted, minWidth:0}}/>
-                  <select
-                    value={expSheetCur}
-                    onChange={e=>setExpSheetCur(e.target.value)}
-                    className="border rounded-xl px-3 py-2 text-sm font-bold shrink-0"
-                    style={{borderColor:C.border, color:C.body}}>
-                    {Object.keys(rates).map(c=><option key={c} value={c}>{c}</option>)}
-                  </select>
-                </div>
-                {/* 換算預覽（僅外幣） */}
-                {expSheetAmt>0 && expSheetCur!==baseCurrency && (
-                  <div className="flex items-center gap-2 pt-2"
-                    style={{borderTop:`1px solid ${C.border}`}}>
-                    <span className="text-xs" style={{color:C.muted}}>≈</span>
-                    <span className="text-sm font-black" style={{color:'#B6C9CF'}}>
-                      {baseCurrency} {Math.round(parseFloat(expSheetAmt||0)*(rates[expSheetCur]??1)).toLocaleString()}
-                    </span>
-                    <span className="text-xs ml-auto" style={{color:C.muted}}>
-                      1 {expSheetCur} = {rates[expSheetCur]} {baseCurrency}
-                    </span>
-                  </div>
-                )}
-              </div>
-
-              {/* 類別 */}
-              <div>
-                <p className="text-[11px] font-black uppercase tracking-widest mb-2" style={{color:C.muted}}>類別</p>
-                <div className="flex flex-wrap gap-2">
-                  {categories.map(cat=>(
-                    <button key={cat} onClick={()=>setExpSheetCat(cat)}
-                      className="px-3 py-1.5 rounded-full text-xs font-bold"
-                      style={expSheetCat===cat
-                        ? {background:C.primary, color:'#fff'}
-                        : {background:'#F4F7FA', color:C.body, border:`1px solid ${C.border}`}}>
-                      {cat}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* 誰付款 */}
-              <div>
-                <p className="text-[11px] font-black uppercase tracking-widest mb-2" style={{color:C.muted}}>誰付款</p>
-                <div className="flex gap-2 flex-wrap">
-                  {users.map(u=>(
-                    <button key={u} onClick={()=>setExpSheetPaidBy(u)}
-                      className="px-4 py-2 rounded-xl text-sm font-bold"
-                      style={expSheetPaidBy===u
-                        ? {background:C.primary, color:'#fff'}
-                        : {background:'#F4F7FA', color:C.body, border:`1px solid ${C.border}`}}>
-                      {u}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* 分攤方式 */}
-              {users.length > 1 && (
-                <div>
-                  <p className="text-[11px] font-black uppercase tracking-widest mb-2" style={{color:C.muted}}>分攤方式</p>
-                  {/* 模式切換 */}
-                  <div className="flex gap-2 mb-3">
-                    {[['equal','平分'],['custom','自訂'],['self','各付各的']].map(([mode,label])=>(
-                      <button key={mode} onClick={()=>{
-                        setSplitMode(mode);
-                        if (mode==='equal') setExpSheetSplit([...users]);
-                        else if (mode==='self') setExpSheetSplit([expSheetPaidBy]);
-                      }}
-                        className="flex-1 py-2 rounded-xl text-xs font-black"
-                        style={splitMode===mode
-                          ? {background:C.primary, color:'#fff'}
-                          : {background:'#F4F7FA', color:C.muted, border:`1px solid ${C.border}`}}>
-                        {label}
-                      </button>
-                    ))}
-                  </div>
-
-                  {/* 平分：每人金額（依選中人數計算）*/}
-                  {splitMode==='equal' && expSheetAmt>0 && expSheetSplit.length>0 && (
-                    <p className="text-xs mb-2" style={{color:C.muted}}>
-                      每人 {expSheetCur} {(parseFloat(expSheetAmt)/expSheetSplit.length).toFixed(0)}
-                      {expSheetSplit.length < users.length ? `（${expSheetSplit.length} 人分攤）` : ''}
-                    </p>
-                  )}
-
-                  {/* 自訂：各自輸入金額 */}
-                  {splitMode==='custom' && (
-                    <div className="space-y-2 mb-2">
-                      {users.map(u=>(
-                        <div key={u} className="flex items-center gap-2">
-                          <span className="text-sm font-bold w-16 shrink-0" style={{color:C.ink}}>{u}</span>
-                          <input type="number" inputMode="decimal"
-                            value={customAmounts[u]||''}
-                            onChange={e=>setCustomAmounts(prev=>({...prev,[u]:e.target.value}))}
-                            placeholder="0"
-                            className="flex-1 border rounded-xl px-3 py-2 text-sm"
-                            style={{borderColor:C.border, color:C.ink}}/>
-                          <span className="text-xs shrink-0" style={{color:C.muted}}>{expSheetCur}</span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-
-                  {/* 各付各的：勾選哪些人參與（各付自己那份） */}
-                  {splitMode==='self' && (
-                    <div className="flex gap-2 flex-wrap">
-                      {users.map(u=>(
-                        <button key={u} onClick={()=>toggleSplitUser(u)}
-                          className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-bold"
-                          style={expSheetSplit.includes(u)
-                            ? {background:C.primaryLight, color:C.primary, border:`1.5px solid ${C.primary}`}
-                            : {background:'#F4F7FA', color:C.muted, border:`1px solid ${C.border}`}}>
-                          {expSheetSplit.includes(u) && <Check size={12}/>}
-                          {u}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-
-                  {/* 平分：可選哪些人參與（實現墊付效果）*/}
-                  {splitMode==='equal' && (
-                    <div className="flex gap-2 flex-wrap mt-1">
-                      {users.map(u=>(
-                        <button key={u} onClick={()=>toggleSplitUser(u)}
-                          className="flex items-center gap-1 px-3 py-1.5 rounded-xl text-xs font-bold"
-                          style={expSheetSplit.includes(u)
-                            ? {background:C.primaryLight, color:C.primary, border:`1.5px solid ${C.primary}`}
-                            : {background:'#F4F7FA', color:C.muted, border:`1px solid ${C.border}`}}>
-                          {expSheetSplit.includes(u) && <Check size={11}/>}
-                          {u}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-
-                </div>
-              )}
-            </div>
-
-            {/* ── 固定：送出按鈕（不隨內容捲動）── */}
-            <div className="shrink-0 px-5 pt-3 pb-8"
-              style={{borderTop:`1px solid ${C.border}`}}>
-              <button onClick={submitExpSheet}
-                className="w-full py-3.5 rounded-2xl text-sm font-black text-white"
-                style={{
-                  background: (expSheetAmt && parseFloat(expSheetAmt)>0 && expSheetPaidBy)
-                    ? C.primary : C.muted,
-                  transition: 'background 0.15s',
-                }}>
-                記帳完成
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ══ 新增景點/交通 MODAL ══ */}
-      {addItemModal && (
-        <div className="fixed inset-0 z-50 flex items-end justify-center" style={{background:'rgba(0,0,0,0.35)', maxWidth:'448px', left:'50%', transform:'translateX(-50%)'}}>
-          <div className="w-full rounded-t-3xl flex flex-col" style={{background:C.card, maxHeight:'85dvh'}}>
-            <div className="shrink-0 flex items-center justify-between px-5 pt-5 pb-4" style={{borderBottom:`1px solid ${C.border}`}}>
-              <div className="flex items-center gap-3">
-                <h2 className="text-lg font-black" style={{color:C.ink}}>新增{addItemModal.type==='place'?'景點':'交通'}</h2>
-                {/* type 切換（只在新增時） */}
-                <div className="flex gap-1 p-1 rounded-xl" style={{background:'#F4F7FA'}}>
-                  {[['place','景點'],['transport','交通']].map(([t,l])=>(
-                    <button key={t} onClick={()=>{setAddItemModal({...addItemModal,type:t});openAddItem(t,addItemModal.date);}}
-                      className="px-3 py-1 rounded-lg text-xs font-black transition-all"
-                      style={addItemModal.type===t?{background:C.primary,color:'#fff'}:{color:C.muted}}>
-                      {l}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <button onClick={()=>setAddItemModal(null)} style={{color:C.muted}}><X size={20}/></button>
-            </div>
-            <div className="overflow-y-auto flex-1 px-5 py-4 space-y-4">
-              {/* 共用：日期 + 時間 */}
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <p className="text-[11px] font-black uppercase tracking-widest mb-1.5" style={{color:C.muted}}>日期</p>
-                  <select className="w-full border rounded-2xl px-3 py-2.5 text-sm font-bold" style={{borderColor:C.border,color:C.ink}}
-                    value={addItemData.date||''} onChange={e=>setAddItemData(p=>({...p,date:e.target.value}))}>
-                    <option value="">未定日期</option>
-                    {tripDateRange.map((d,i)=>{const dt=new Date(d);return<option key={d} value={d}>Day{i+1} {dt.getMonth()+1}/{dt.getDate()}</option>;})}
-                  </select>
-                </div>
-                <div>
-                  <p className="text-[11px] font-black uppercase tracking-widest mb-1.5" style={{color:C.muted}}>時間</p>
-                  <input type="time" className="w-full border rounded-2xl px-3 py-2.5 text-sm" style={{borderColor:C.border,color:C.ink}}
-                    value={addItemData.time||''} onChange={e=>setAddItemData(p=>({...p,time:e.target.value}))}/>
-                </div>
-              </div>
-
-              {addItemModal.type==='place' && <>
-                <div>
-                  <p className="text-[11px] font-black uppercase tracking-widest mb-1.5" style={{color:C.muted}}>景點名稱 *</p>
-                  <input placeholder="例如：奇美博物館" className="w-full border rounded-2xl px-4 py-3 text-sm font-bold" style={{borderColor:C.border,color:C.ink}}
-                    value={addItemData.title||''} onChange={e=>setAddItemData(p=>({...p,title:e.target.value}))}/>
-                </div>
-                <div>
-                  <p className="text-[11px] font-black uppercase tracking-widest mb-1.5" style={{color:C.muted}}>地點（供導航）</p>
-                  <input placeholder="店家名稱或地址" className="w-full border rounded-2xl px-4 py-3 text-sm" style={{borderColor:C.border,color:C.ink}}
-                    value={addItemData.location||''} onChange={e=>setAddItemData(p=>({...p,location:e.target.value}))}/>
-                </div>
-                <div>
-                  <p className="text-[11px] font-black uppercase tracking-widest mb-1.5" style={{color:C.muted}}>備註</p>
-                  <textarea placeholder="注意事項..." className="w-full border rounded-2xl px-4 py-3 text-sm resize-none" rows={2} style={{borderColor:C.border,color:C.ink}}
-                    value={addItemData.notes||''} onChange={e=>setAddItemData(p=>({...p,notes:e.target.value}))}/>
-                </div>
-              </>}
-
-              {addItemModal.type==='transport' && <>
-                <div>
-                  <p className="text-[11px] font-black uppercase tracking-widest mb-1.5" style={{color:C.muted}}>交通方式 *</p>
-                  <input placeholder="高鐵、飛機、巴士…" className="w-full border rounded-2xl px-4 py-3 text-sm font-bold" style={{borderColor:C.border,color:C.ink}}
-                    value={addItemData.transportMode||''} onChange={e=>setAddItemData(p=>({...p,transportMode:e.target.value}))}/>
-                </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <p className="text-[11px] font-black uppercase tracking-widest mb-1.5" style={{color:C.muted}}>搭車地點</p>
-                    <input placeholder="台南火車站" className="w-full border rounded-2xl px-3 py-2.5 text-sm" style={{borderColor:C.border,color:C.ink}}
-                      value={addItemData.from||''} onChange={e=>setAddItemData(p=>({...p,from:e.target.value}))}/>
-                  </div>
-                  <div>
-                    <p className="text-[11px] font-black uppercase tracking-widest mb-1.5" style={{color:C.muted}}>下車地點</p>
-                    <input placeholder="桃園機場" className="w-full border rounded-2xl px-3 py-2.5 text-sm" style={{borderColor:C.border,color:C.ink}}
-                      value={addItemData.to||''} onChange={e=>setAddItemData(p=>({...p,to:e.target.value}))}/>
-                  </div>
-                </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <p className="text-[11px] font-black uppercase tracking-widest mb-1.5" style={{color:C.muted}}>票價</p>
-                    <input placeholder="1190" className="w-full border rounded-2xl px-3 py-2.5 text-sm" style={{borderColor:C.border,color:C.ink}}
-                      value={addItemData.price||''} onChange={e=>setAddItemData(p=>({...p,price:e.target.value}))}/>
-                  </div>
-                  <div>
-                    <p className="text-[11px] font-black uppercase tracking-widest mb-1.5" style={{color:C.muted}}>預估時間</p>
-                    <input placeholder="2小時" className="w-full border rounded-2xl px-3 py-2.5 text-sm" style={{borderColor:C.border,color:C.ink}}
-                      value={addItemData.duration||''} onChange={e=>setAddItemData(p=>({...p,duration:e.target.value}))}/>
-                  </div>
-                </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <p className="text-[11px] font-black uppercase tracking-widest mb-1.5" style={{color:C.muted}}>班次名稱（選填）</p>
-                    <input placeholder="自強號" className="w-full border rounded-2xl px-3 py-2.5 text-sm" style={{borderColor:C.border,color:C.ink}}
-                      value={addItemData.title||''} onChange={e=>setAddItemData(p=>({...p,title:e.target.value}))}/>
-                  </div>
-                  <div>
-                    <p className="text-[11px] font-black uppercase tracking-widest mb-1.5" style={{color:C.muted}}>購票截止日</p>
-                    <input type="date" className="w-full border rounded-2xl px-3 py-2.5 text-sm" style={{borderColor:C.border,color:C.ink}}
-                      value={addItemData.ticketDeadline||''} onChange={e=>setAddItemData(p=>({...p,ticketDeadline:e.target.value}))}/>
-                  </div>
-                </div>
-                <div>
-                  <p className="text-[11px] font-black uppercase tracking-widest mb-1.5" style={{color:C.muted}}>購票連結</p>
-                  <input type="url" placeholder="https://" className="w-full border rounded-2xl px-4 py-3 text-sm" style={{borderColor:C.border,color:C.ink}}
-                    value={addItemData.url||''} onChange={e=>setAddItemData(p=>({...p,url:e.target.value}))}/>
-                </div>
-                <label className="flex items-center gap-3 cursor-pointer">
-                  <input type="checkbox" checked={addItemData.needTicket||false} onChange={e=>setAddItemData(p=>({...p,needTicket:e.target.checked}))} className="w-4 h-4 rounded accent-[#48749E]"/>
-                  <span className="text-sm font-bold" style={{color:C.ink}}>需提前購票 → 自動加行前清單</span>
-                </label>
-                <div>
-                  <p className="text-[11px] font-black uppercase tracking-widest mb-1.5" style={{color:C.muted}}>備註</p>
-                  <textarea placeholder="注意事項..." className="w-full border rounded-2xl px-4 py-3 text-sm resize-none" rows={2} style={{borderColor:C.border,color:C.ink}}
-                    value={addItemData.notes||''} onChange={e=>setAddItemData(p=>({...p,notes:e.target.value}))}/>
-                </div>
-              </>}
-            </div>
-            <div className="shrink-0 px-5 pt-3 pb-8" style={{borderTop:`1px solid ${C.border}`}}>
-              <button onClick={saveAddItem}
-                disabled={addItemModal.type==='place'?!addItemData.title?.trim():!addItemData.transportMode?.trim()}
-                className="w-full py-3.5 rounded-2xl text-sm font-black text-white transition-all"
-                style={{background:((addItemModal.type==='place'&&addItemData.title?.trim())||(addItemModal.type==='transport'&&addItemData.transportMode?.trim()))?C.primary:C.muted}}>
-                新增{addItemModal.type==='place'?'景點':'交通'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ══ 設定 MODAL ══ */}
-      {isSettingsOpen && (
-        <div className="fixed inset-0 z-50 flex items-end justify-center" style={{background:'rgba(0,0,0,0.35)', maxWidth:'448px', left:'50%', transform:'translateX(-50%)'}}>
-          <div className="w-full rounded-t-3xl flex flex-col" style={{background:C.card, maxHeight:'90dvh'}}>
-            <div className="shrink-0 flex items-center justify-between px-5 pt-5 pb-4" style={{borderBottom:`1px solid ${C.border}`}}>
-              <h2 className="text-lg font-black" style={{color:C.ink}}>系統設定</h2>
-              <button onClick={()=>setIsSettingsOpen(false)} style={{color:C.muted}}><X size={20}/></button>
-            </div>
-            <div className="overflow-y-auto flex-1 px-5 py-5 space-y-8">
-
-              {/* 人員 */}
-              <div>
-                <div className="flex items-center justify-between mb-3">
-                  <p className="text-[11px] font-black uppercase tracking-widest" style={{color:C.muted}}>參與人員</p>
-                  <button onClick={()=>setIsUsersLocked(v=>!v)} className="flex items-center gap-1 text-xs font-bold px-2 py-1 rounded-lg" style={{background:'#F4F7FA',color:isUsersLocked?C.muted:C.danger}}>
-                    {isUsersLocked?<><Lock size={11}/>鎖定</>:<><Unlock size={11}/>編輯中</>}
-                  </button>
-                </div>
-                <div className="flex flex-wrap gap-2 mb-3">
-                  {users.map((u,i)=>(
-                    <div key={u} className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-bold" style={{background:i===0?C.primaryLight:'#F4F7FA',color:i===0?C.primary:C.body,border:`1px solid ${i===0?C.primary+'33':C.border}`}}>
-                      {i===0&&<span>👑</span>}{u}
-                      {!isUsersLocked&&i>0&&<button onClick={()=>setUsers(p=>p.filter(x=>x!==u))} style={{color:C.muted}}><X size={12}/></button>}
-                    </div>
-                  ))}
-                </div>
-                {!isUsersLocked&&(
-                  <div className="flex gap-2">
-                    <input value={newUser} onChange={e=>setNewUser(e.target.value)} placeholder="新成員名字..." className="flex-1 border rounded-2xl px-3 py-2 text-sm" style={{borderColor:C.border,color:C.ink}} onKeyDown={e=>e.key==='Enter'&&newUser.trim()&&(setUsers(p=>[...p,newUser.trim()]),setNewUser(''))}/>
-                    <button onClick={()=>{if(newUser.trim()){setUsers(p=>[...p,newUser.trim()]);setNewUser('');}}} className="px-4 py-2 rounded-2xl text-sm font-black text-white" style={{background:C.primary}}>新增</button>
-                  </div>
-                )}
-              </div>
-
-              {/* 記帳分類 */}
-              <div>
-                <p className="text-[11px] font-black uppercase tracking-widest mb-3" style={{color:C.muted}}>記帳分類</p>
-                <div className="flex flex-wrap gap-2 mb-3">
-                  {categories.map(c=>(
-                    <div key={c} className="flex items-center gap-1 px-3 py-1.5 rounded-full text-xs font-bold" style={{background:C.primaryLight,color:C.primary}}>
-                      {c}<button onClick={()=>setCategories(p=>p.filter(x=>x!==c))} style={{color:C.primary+'99'}}><X size={11}/></button>
-                    </div>
-                  ))}
-                </div>
-                <div className="flex gap-2">
-                  <input value={newCategory} onChange={e=>setNewCategory(e.target.value)} placeholder="新增分類..." className="flex-1 border rounded-2xl px-3 py-2 text-sm" style={{borderColor:C.border,color:C.ink}} onKeyDown={e=>e.key==='Enter'&&newCategory.trim()&&(setCategories(p=>[...p,newCategory.trim()]),setNewCategory(''))}/>
-                  <button onClick={()=>{if(newCategory.trim()){setCategories(p=>[...p,newCategory.trim()]);setNewCategory('');}}} className="px-4 py-2 rounded-2xl text-sm font-black" style={{background:'#F4F7FA',color:C.body}}>新增</button>
-                </div>
-              </div>
-
-              {/* 匯率 */}
-              <div>
-                <div className="flex items-center justify-between mb-3">
-                  <p className="text-[11px] font-black uppercase tracking-widest" style={{color:C.muted}}>匯率設定</p>
-                  <span className="text-xs font-bold" style={{color:C.muted}}>基準：{baseCurrency}</span>
-                </div>
-                <div className="space-y-2 mb-3">
-                  {Object.entries(rates).map(([c,r])=>(
-                    <div key={c} className="flex items-center gap-2 px-3 py-2 rounded-2xl" style={{background:c===baseCurrency?C.primaryLight:'#F4F7FA',border:`1px solid ${c===baseCurrency?C.primary+'33':C.border}`}}>
-                      {c===baseCurrency&&<Star size={12} style={{color:C.primary}}/>}
-                      <span className="text-sm font-bold w-12" style={{color:c===baseCurrency?C.primary:C.ink}}>1 {c}</span>
-                      <span className="text-xs" style={{color:C.muted}}>=</span>
-                      <input type="number" step="0.0001" className="flex-1 text-sm text-right bg-transparent border-none" style={{color:C.ink}} value={r} disabled={c===baseCurrency} onChange={e=>setRates(p=>({...p,[c]:parseFloat(e.target.value)||1}))}/>
-                      <span className="text-xs" style={{color:C.muted}}>{baseCurrency}</span>
-                      {c!==baseCurrency&&<>
-                        <button onClick={()=>setBaseCurrency(c)} title="設為基準"><Star size={14} style={{color:C.muted}}/></button>
-                        <button onClick={()=>setRates(p=>{const n={...p};delete n[c];return n;})}><X size={14} style={{color:C.muted}}/></button>
-                      </>}
-                    </div>
-                  ))}
-                </div>
-                <div className="flex gap-2">
-                  <input value={newCurrency} onChange={e=>setNewCurrency(e.target.value.toUpperCase())} placeholder="幣別 (JPY)" maxLength={3} className="w-24 border rounded-2xl px-3 py-2 text-sm uppercase" style={{borderColor:C.border,color:C.ink}}/>
-                  <input type="number" step="0.001" value={newRateValue} onChange={e=>setNewRateValue(e.target.value)} placeholder={`1幣=?${baseCurrency}`} className="flex-1 border rounded-2xl px-3 py-2 text-sm" style={{borderColor:C.border,color:C.ink}}/>
-                  <button onClick={()=>{if(newCurrency&&newRateValue){setRates(p=>({...p,[newCurrency]:parseFloat(newRateValue)||1}));setNewCurrency('');setNewRateValue('');}}} className="px-3 py-2 rounded-2xl text-sm font-black" style={{background:'#F4F7FA',color:C.body}}>新增</button>
-                </div>
-              </div>
-
-              {/* 住宿設定 */}
-              <div>
-                <p className="text-[11px] font-black uppercase tracking-widest mb-3" style={{color:C.muted}}>住宿設定</p>
-                <div className="space-y-2 mb-3">
-                  {accommodations.length===0&&<p className="text-xs" style={{color:C.muted}}>尚未設定住宿</p>}
-                  {accommodations.map((a,i)=>(
-                    <div key={i} className="flex items-center gap-3 px-3 py-2 rounded-2xl" style={{background:C.primaryLight,border:`1px solid ${C.primary}33`}}>
-                      <Hotel size={14} style={{color:C.primary}}/>
-                      <div className="flex-1 min-w-0">
-                        <div className="text-xs font-bold" style={{color:C.primary}}>{a.checkIn}～{a.checkOut}</div>
-                        <div className="text-sm font-bold truncate" style={{color:C.ink}}>{a.name}</div>
-                        {a.location&&<div className="text-xs truncate" style={{color:C.muted}}>{a.location}</div>}
-                      </div>
-                      <button onClick={()=>setAccommodations(p=>p.filter((_,j)=>j!==i))} style={{color:C.muted}}><X size={16}/></button>
-                    </div>
-                  ))}
-                </div>
-                {!showAddAccom?(
-                  <button onClick={()=>setShowAddAccom(true)} className="w-full py-2 rounded-2xl text-sm font-black border-2 border-dashed" style={{borderColor:C.primary+'44',color:C.primary}}>+ 新增住宿</button>
-                ):(
-                  <div className="space-y-3 p-4 rounded-2xl" style={{background:'#F4F7FA',border:`1px solid ${C.border}`}}>
-                    <div className="grid grid-cols-2 gap-2">
-                      <div><p className="text-[10px] font-black uppercase mb-1" style={{color:C.muted}}>入住日</p>
-                        <input type="date" className="w-full border rounded-xl px-2 py-2 text-sm" style={{borderColor:C.border}} value={newAccomCheckIn} onChange={e=>setNewAccomCheckIn(e.target.value)}/></div>
-                      <div><p className="text-[10px] font-black uppercase mb-1" style={{color:C.muted}}>退房日</p>
-                        <input type="date" className="w-full border rounded-xl px-2 py-2 text-sm" style={{borderColor:C.border}} value={newAccomCheckOut} onChange={e=>setNewAccomCheckOut(e.target.value)}/></div>
-                    </div>
-                    <input placeholder="住宿名稱" className="w-full border rounded-xl px-3 py-2 text-sm" style={{borderColor:C.border,color:C.ink}} value={newAccomName} onChange={e=>setNewAccomName(e.target.value)}/>
-                    <input placeholder="地址（供導航）" className="w-full border rounded-xl px-3 py-2 text-sm" style={{borderColor:C.border,color:C.ink}} value={newAccomLoc} onChange={e=>setNewAccomLoc(e.target.value)}/>
-                    <div className="flex gap-2">
-                      <button onClick={()=>{setShowAddAccom(false);setNewAccomName('');setNewAccomLoc('');setNewAccomCheckIn('');setNewAccomCheckOut('');}} className="flex-1 py-2 rounded-xl text-sm font-bold" style={{background:'#E5E7EB',color:C.muted}}>取消</button>
-                      <button onClick={()=>{if(!newAccomName.trim())return;setAccommodations(p=>[...p,{checkIn:newAccomCheckIn,checkOut:newAccomCheckOut,name:newAccomName.trim(),location:newAccomLoc.trim(),date:newAccomCheckIn}].sort((a,b)=>a.checkIn.localeCompare(b.checkIn)));setShowAddAccom(false);setNewAccomName('');setNewAccomLoc('');setNewAccomCheckIn('');setNewAccomCheckOut('');}} className="flex-1 py-2 rounded-xl text-sm font-black text-white" style={{background:C.primary}}>新增</button>
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              {/* Markdown 匯入 */}
-              <div>
-                <p className="text-[11px] font-black uppercase tracking-widest mb-3" style={{color:C.muted}}>匯入行程</p>
-                <p className="text-xs mb-3" style={{color:C.muted}}>支援行程、住宿、收藏景點、必帶物品一次匯入</p>
-                {!isMarkdownOpen?(
-                  <button onClick={()=>setIsMarkdownOpen(true)} className="w-full py-2.5 rounded-2xl text-sm font-black" style={{background:C.primaryLight,color:C.primary}}>📋 貼上 Markdown 匯入</button>
-                ):(
-                  <div className="space-y-3">
-                    <textarea value={markdownText} onChange={e=>setMarkdownText(e.target.value)} placeholder="在此貼上 Markdown 行程..." className="w-full border rounded-2xl px-4 py-3 text-sm resize-none" rows={8} style={{borderColor:C.border,color:C.ink}}/>
-                    {markdownStatus&&<p className="text-xs font-bold" style={{color:C.primary}}>{markdownStatus}</p>}
-                    <div className="flex gap-2">
-                      <button onClick={()=>{setIsMarkdownOpen(false);setMarkdownStatus('');}} className="flex-1 py-2.5 rounded-2xl text-sm font-bold" style={{background:'#F4F7FA',color:C.muted}}>取消</button>
-                      <button onClick={handleMarkdownImport} className="flex-1 py-2.5 rounded-2xl text-sm font-black text-white" style={{background:C.primary}}>匯入</button>
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              {/* 版本號 */}
-              <div className="text-center pb-2">
-                <span className="text-xs font-mono" style={{color:C.muted}}>v0.7.0</span>
-              </div>
-
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ══ 分享 MODAL ══ */}
-      {isShareOpen && (
-        <div className="fixed inset-0 z-50 flex items-end justify-center" style={{background:'rgba(0,0,0,0.35)', maxWidth:'448px', left:'50%', transform:'translateX(-50%)'}}>
-          <div className="w-full rounded-t-3xl flex flex-col" style={{background:C.card, maxHeight:'80dvh'}}>
-            <div className="shrink-0 flex items-center justify-between px-5 pt-5 pb-4" style={{borderBottom:`1px solid ${C.border}`}}>
-              <h2 className="text-lg font-black" style={{color:C.ink}}>分享行程</h2>
-              <button onClick={()=>{setIsShareOpen(false);setShareStatus('');}} style={{color:C.muted}}><X size={20}/></button>
-            </div>
-            <div className="overflow-y-auto flex-1 px-5 py-5 space-y-5">
-              <div className="space-y-3">
-                <input type="email" placeholder="輸入對方 Gmail..." value={newShareEmail} onChange={e=>{setNewShareEmail(e.target.value);setShareStatus('');}}
-                  className="w-full border rounded-2xl px-4 py-3 text-sm" style={{borderColor:C.border,color:C.ink}}/>
-                <div className="flex gap-2">
-                  {[['viewer','👁 只能查看'],['editor','✏️ 可以編輯']].map(([r,l])=>(
-                    <button key={r} onClick={()=>setNewShareRole(r)} className="flex-1 py-2.5 rounded-2xl text-sm font-black"
-                      style={newShareRole===r?{background:C.primary,color:'#fff'}:{background:'#F4F7FA',color:C.muted,border:`1px solid ${C.border}`}}>{l}</button>
-                  ))}
-                </div>
-                <button onClick={addShareMember} className="w-full py-3 rounded-2xl text-sm font-black text-white" style={{background:C.primary}}>新增成員</button>
-                {shareStatus&&<p className="text-sm text-center font-bold" style={{color:C.primary}}>{shareStatus}</p>}
-              </div>
-              {(shareEditors.length>0||shareViewers.length>0)&&(
-                <div className="space-y-2">
-                  <p className="text-[11px] font-black uppercase tracking-widest" style={{color:C.muted}}>目前成員</p>
-                  {shareEditors.map(uid=><div key={uid} className="flex items-center justify-between px-3 py-2 rounded-2xl" style={{background:C.primaryLight}}><span className="text-sm font-bold" style={{color:C.primary}}>✏️ {uid}</span><button onClick={()=>setShareEditors(p=>p.filter(x=>x!==uid))} style={{color:C.muted}}><X size={14}/></button></div>)}
-                  {shareViewers.map(uid=><div key={uid} className="flex items-center justify-between px-3 py-2 rounded-2xl" style={{background:'#F4F7FA'}}><span className="text-sm font-bold" style={{color:C.body}}>👁 {uid}</span><button onClick={()=>setShareViewers(p=>p.filter(x=>x!==uid))} style={{color:C.muted}}><X size={14}/></button></div>)}
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
+      {/* ══ EXPENSE MODALS ══ */}
+      {addingExpenseFor && <ExpenseFormModal expenseItem={addingExpenseFor} users={users} rates={rates} baseCurrency={baseCurrency} categories={categories} onSave={saveExpense} onClose={()=>setAddingExpenseFor(null)}/>}
+      {editingExpense && <ExpenseFormModal key={`edit-${editingExpense.id}`} initialData={editingExpense} expenseItem={itinerary.find(i=>i.id===editingExpense.itineraryId)||{title:'一般花費'}} users={users} rates={rates} baseCurrency={baseCurrency} categories={categories} onSave={saveExpense} onClose={()=>setEditingExpense(null)}/>}
 
       {/* ══ BOTTOM NAV ══ */}
       <nav className="shrink-0 z-40" style={{background:C.primary}}>
