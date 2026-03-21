@@ -110,6 +110,19 @@ GitHub Actions 部署時需在 repo Settings → Secrets and variables → Actio
 
 ## 版本紀錄
 
+## v0.7.6 (2026-03-21)
+
+### 新功能
+- **從 Markdown 建立旅程**：新增旅程頁新增「從 Markdown 匯入」模式，貼上 Markdown 後顯示解析預覽（名稱、日期、各類資料筆數），確認後一鍵建立完整專案，無需再進入設定頁匯入
+- 自動偵測 Markdown 頂層 meta：`# 旅程名稱`、`- 日期：`、`- 幣別：` 直接作為行程基本資料
+- 含 `需提前購票：是` 的交通項目在建立時自動產生購票提醒清單
+
+### 架構調整
+- `parseMarkdown` 從 `TripApp.jsx` 抽離為獨立模組 `src/utils/parseMarkdown.js`，`TripApp` 和 `TripSelector` 共用同一份解析邏輯
+- 解析結果新增回傳 `tripName`、`tripStartDate`、`tripEndDate`、`baseCurrency` 四個頂層欄位
+
+---
+
 ## v0.7.5 (2026-03-21)
 
 ### 新功能

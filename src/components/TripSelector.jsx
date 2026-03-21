@@ -2,7 +2,8 @@ import { useState } from 'react';
 import { collection, addDoc, deleteDoc, doc, serverTimestamp, updateDoc } from 'firebase/firestore';
 import { signOut } from 'firebase/auth';
 import { db, auth } from '../firebase/config';
-import { Plus, Trash2, LogOut, Users, Edit2, Check, X, Calendar, Plane, MapPin, Luggage, Camera } from 'lucide-react';
+import { Plus, Trash2, LogOut, Users, Edit2, Check, X, Calendar, Plane, MapPin, Luggage, Camera, FileText } from 'lucide-react';
+import { parseMarkdown } from '../utils/parseMarkdown';
 
 const C = {
   primary:      '#48749E',
@@ -47,6 +48,9 @@ function tripDays(s, e) {
 
 export default function TripSelector({ uid, userProfile, trips, sharedTrips, onSelect }) {
   const [creating,          setCreating]          = useState(false);
+  const [createMode,        setCreateMode]        = useState('manual'); // 'manual' | 'markdown'
+  const [mdImportText,      setMdImportText]      = useState('');
+  const [mdPreview,         setMdPreview]         = useState(null); // parsed preview
   const [newName,           setNewName]            = useState('');
   const [startDate,         setStartDate]          = useState('');
   const [endDate,           setEndDate]            = useState('');
@@ -82,6 +86,58 @@ export default function TripSelector({ uid, userProfile, trips, sharedTrips, onS
       setCreating(false); setNewName(''); setStartDate(''); setEndDate('');
       onSelect(ref.id);
     });
+  };
+
+  const handleMdPreview = () => {
+    if (!mdImportText.trim()) return;
+    const result = parseMarkdown(mdImportText);
+    setMdPreview(result);
+  };
+
+  const handleCreateFromMarkdown = async () => {
+    if (!mdPreview) return;
+    const myName = userProfile?.nickname || userProfile?.displayName || userProfile?.email?.split('@')[0] || '自己';
+    const name = mdPreview.tripName || '新旅程';
+    const sDate = mdPreview.tripStartDate || '';
+    const eDate = mdPreview.tripEndDate   || '';
+    const currency = mdPreview.baseCurrency || 'TWD';
+
+    // 把 needTicket 的交通項目自動產生 checklist ticket
+    const autoTickets = [];
+    mdPreview.itineraryItems.forEach(item => {
+      if (item.type === 'transport' && item.needTicket) {
+        const label = [item.transportMode, item.from && item.to ? `${item.from}→${item.to}` : ''].filter(Boolean).join(' ');
+        autoTickets.push({
+          id: crypto.randomUUID(),
+          type: 'ticket',
+          text: `購票：${label || '交通票'}`,
+          checked: false,
+          itineraryId: item.id,
+          ticketDeadline: item.ticketDeadline || '',
+          ticketMode: item.transportMode || '',
+          ticketDest: item.to || '',
+        });
+      }
+    });
+
+    const ref = await addDoc(collection(db, 'users', uid, 'trips'), {
+      ...DEFAULT_TRIP,
+      name,
+      users: [myName],
+      tripStartDate: sDate,
+      tripEndDate:   eDate,
+      baseCurrency:  currency,
+      rates: currency !== 'TWD' ? { TWD: 1, [currency]: 1, JPY: 0.21, USD: 31.5 } : DEFAULT_TRIP.rates,
+      itinerary:      mdPreview.itineraryItems,
+      checklist:      [...mdPreview.checklistItems, ...autoTickets],
+      accommodations: mdPreview.accommodationItems,
+      savedSpots:     mdPreview.savedSpotItems,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+
+    setCreating(false); setMdImportText(''); setMdPreview(null); setCreateMode('manual');
+    onSelect(ref.id);
   };
 
   const handleDeleteConfirm = async () => {
@@ -233,49 +289,100 @@ export default function TripSelector({ uid, userProfile, trips, sharedTrips, onS
         {creating ? (
           <div className="rounded-2xl p-4 space-y-3"
             style={{background:C.card, border:`1.5px solid ${C.primary}`, boxShadow:C.cardShadow}}>
-            <input autoFocus type="text"
-              placeholder="旅程名稱（如：東京五天四夜）"
-              value={newName} onChange={e=>setNewName(e.target.value)}
-              onKeyDown={e=>e.key==='Enter'&&handleCreate()}
-              className="w-full border rounded-2xl px-4 py-3 text-sm font-bold outline-none"
-              style={{borderColor:C.border, color:C.ink}}/>
 
-            {/* 日期 */}
-            <div className="rounded-2xl p-3 space-y-2" style={{background:C.primaryLight}}>
-              <div className="flex items-center gap-1.5">
-                <Calendar size={12} style={{color:C.primary}}/>
-                <span className="text-[11px] font-black" style={{color:C.primary}}>旅行日期（可跳過）</span>
+            {/* mode 切換 */}
+            <div className="flex gap-1 p-1 rounded-xl" style={{background:'#F4F7FA'}}>
+              {[['manual','手動建立'],['markdown','從 Markdown 匯入']].map(([m,l])=>(
+                <button key={m} onClick={()=>{setCreateMode(m);setMdPreview(null);}}
+                  className="flex-1 py-2 rounded-lg text-xs font-black transition-all flex items-center justify-center gap-1.5"
+                  style={createMode===m?{background:C.primary,color:'#fff'}:{color:C.muted}}>
+                  {m==='markdown'&&<FileText size={12}/>}{l}
+                </button>
+              ))}
+            </div>
+
+            {/* ── 手動建立 ── */}
+            {createMode==='manual' && <>
+              <input autoFocus type="text"
+                placeholder="旅程名稱（如：東京五天四夜）"
+                value={newName} onChange={e=>setNewName(e.target.value)}
+                onKeyDown={e=>e.key==='Enter'&&handleCreate()}
+                className="w-full border rounded-2xl px-4 py-3 text-sm font-bold outline-none"
+                style={{borderColor:C.border, color:C.ink}}/>
+              <div className="rounded-2xl p-3 space-y-2" style={{background:C.primaryLight}}>
+                <div className="flex items-center gap-1.5">
+                  <Calendar size={12} style={{color:C.primary}}/>
+                  <span className="text-[11px] font-black" style={{color:C.primary}}>旅行日期（可跳過）</span>
+                </div>
+                <div className="flex gap-2 items-center">
+                  <input type="date" value={startDate}
+                    onChange={e=>{setStartDate(e.target.value);if(endDate&&e.target.value>endDate)setEndDate('');}}
+                    className="flex-1 border rounded-xl px-2 py-2 text-xs outline-none"
+                    style={{borderColor:`${C.primary}44`, color:C.ink, background:C.card}}/>
+                  <span style={{color:C.muted, fontSize:12}}>→</span>
+                  <input type="date" value={endDate} min={startDate}
+                    onChange={e=>setEndDate(e.target.value)}
+                    className="flex-1 border rounded-xl px-2 py-2 text-xs outline-none"
+                    style={{borderColor:`${C.primary}44`, color:C.ink, background:C.card}}/>
+                </div>
+                {days && <p className="text-center text-xs font-black" style={{color:C.primary}}>共 {days} 天（{fmtShort(startDate)} – {fmtShort(endDate)}）</p>}
               </div>
-              <div className="flex gap-2 items-center">
-                <input type="date" value={startDate}
-                  onChange={e=>{setStartDate(e.target.value);if(endDate&&e.target.value>endDate)setEndDate('');}}
-                  className="flex-1 border rounded-xl px-2 py-2 text-xs outline-none"
-                  style={{borderColor:`${C.primary}44`, color:C.ink, background:C.card}}/>
-                <span style={{color:C.muted, fontSize:12}}>→</span>
-                <input type="date" value={endDate} min={startDate}
-                  onChange={e=>setEndDate(e.target.value)}
-                  className="flex-1 border rounded-xl px-2 py-2 text-xs outline-none"
-                  style={{borderColor:`${C.primary}44`, color:C.ink, background:C.card}}/>
+              <div className="flex gap-2">
+                <button onClick={()=>{setCreating(false);setStartDate('');setEndDate('');setCreateMode('manual');}}
+                  className="flex-1 py-3 rounded-2xl text-sm font-bold" style={{background:'#F4F7FA', color:C.muted}}>取消</button>
+                <button onClick={handleCreate}
+                  className="flex-1 py-3 rounded-2xl text-sm font-black text-white" style={{background:C.primary}}>建立旅程</button>
               </div>
-              {days && (
-                <p className="text-center text-xs font-black" style={{color:C.primary}}>
-                  共 {days} 天（{fmtShort(startDate)} – {fmtShort(endDate)}）
-                </p>
+            </>}
+
+            {/* ── Markdown 匯入 ── */}
+            {createMode==='markdown' && <>
+              {!mdPreview ? (
+                <>
+                  <textarea
+                    autoFocus
+                    value={mdImportText} onChange={e=>setMdImportText(e.target.value)}
+                    placeholder={"貼上 Markdown 行程內容...\n\n# 旅程名稱\n- 日期：2026-05-01 ~ 2026-05-09\n- 幣別：TWD\n\n## 行程\n..."}
+                    className="w-full border rounded-2xl px-4 py-3 text-sm resize-none outline-none"
+                    rows={10} style={{borderColor:C.border, color:C.ink}}/>
+                  <div className="flex gap-2">
+                    <button onClick={()=>{setCreating(false);setMdImportText('');setCreateMode('manual');}}
+                      className="flex-1 py-3 rounded-2xl text-sm font-bold" style={{background:'#F4F7FA', color:C.muted}}>取消</button>
+                    <button onClick={handleMdPreview} disabled={!mdImportText.trim()}
+                      className="flex-1 py-3 rounded-2xl text-sm font-black text-white"
+                      style={{background:mdImportText.trim()?C.primary:C.muted}}>解析預覽</button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  {/* 預覽結果 */}
+                  <div className="rounded-2xl p-3 space-y-1.5" style={{background:C.primaryLight}}>
+                    <p className="text-xs font-black" style={{color:C.primary}}>解析結果預覽</p>
+                    <p className="text-sm font-black" style={{color:C.ink}}>📌 {mdPreview.tripName||'（未偵測到名稱）'}</p>
+                    {mdPreview.tripStartDate && <p className="text-xs" style={{color:C.body}}>📅 {mdPreview.tripStartDate} ~ {mdPreview.tripEndDate}</p>}
+                    {mdPreview.baseCurrency  && <p className="text-xs" style={{color:C.body}}>💰 幣別：{mdPreview.baseCurrency}</p>}
+                    <div className="flex gap-3 mt-1">
+                      {[
+                        ['🗓', mdPreview.itineraryItems.length, '行程'],
+                        ['🏨', mdPreview.accommodationItems.length, '住宿'],
+                        ['✅', mdPreview.checklistItems.length, '清單'],
+                        ['⭐', mdPreview.savedSpotItems.length, '收藏'],
+                      ].map(([icon, count, label]) => count > 0 && (
+                        <span key={label} className="text-xs font-bold" style={{color:C.primary}}>
+                          {icon} {count} {label}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="flex gap-2">
+                    <button onClick={()=>setMdPreview(null)}
+                      className="flex-1 py-3 rounded-2xl text-sm font-bold" style={{background:'#F4F7FA', color:C.muted}}>重新編輯</button>
+                    <button onClick={handleCreateFromMarkdown}
+                      className="flex-1 py-3 rounded-2xl text-sm font-black text-white" style={{background:C.primary}}>建立行程</button>
+                  </div>
+                </>
               )}
-            </div>
-
-            <div className="flex gap-2">
-              <button onClick={()=>{setCreating(false);setStartDate('');setEndDate('');}}
-                className="flex-1 py-3 rounded-2xl text-sm font-bold"
-                style={{background:'#F4F7FA', color:C.muted}}>
-                取消
-              </button>
-              <button onClick={handleCreate}
-                className="flex-1 py-3 rounded-2xl text-sm font-black text-white"
-                style={{background:C.primary}}>
-                建立旅程
-              </button>
-            </div>
+            </>}
           </div>
         ) : (
           <button onClick={()=>setCreating(true)}
