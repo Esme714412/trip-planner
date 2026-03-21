@@ -2,9 +2,26 @@ import { useState } from 'react';
 import { collection, addDoc, deleteDoc, doc, serverTimestamp, updateDoc } from 'firebase/firestore';
 import { signOut } from 'firebase/auth';
 import { db, auth } from '../firebase/config';
-import { Plus, Trash2, LogOut, Users, Edit2, Check, X, Calendar } from 'lucide-react';
+import { Plus, Trash2, LogOut, Users, Edit2, Check, X, Calendar, Plane, MapPin, Luggage, Camera } from 'lucide-react';
 
-const ICONS = ['✈️', '🗺️', '🎒', '📸', '🏖️', '🏔️', '🌏', '🍜'];
+const C = {
+  primary:      '#48749E',
+  primaryLight: '#EAF0F6',
+  primaryDark:  '#2F5478',
+  warning:      '#FA9819',
+  warningLight: '#FEF3E0',
+  ink:          '#111111',
+  body:         '#444444',
+  muted:        '#9CA3AF',
+  card:         '#FFFFFF',
+  border:       '#E8ECF0',
+  danger:       '#E53E3E',
+  dangerLight:  '#FFF0F0',
+  cardShadow:   '0 2px 12px rgba(72,116,158,0.08), 0 1px 3px rgba(0,0,0,0.04)',
+};
+
+const TRIP_ICONS = [Plane, MapPin, Luggage, Camera];
+const ICON_EMOJIS = ['✈️', '🗺️', '🎒', '📸', '🏖️', '🏔️', '🌏', '🍜'];
 
 const DEFAULT_TRIP = {
   iconIndex: 0,
@@ -16,36 +33,32 @@ const DEFAULT_TRIP = {
   expenses: [],
 };
 
-// 格式化日期顯示
 function fmtShort(dateStr) {
   if (!dateStr) return '';
   const d = new Date(dateStr);
   return `${d.getMonth()+1}/${d.getDate()}`;
 }
 
+function tripDays(s, e) {
+  if (!s || !e) return null;
+  const diff = (new Date(e) - new Date(s)) / (1000*60*60*24);
+  return diff >= 0 ? Math.round(diff) + 1 : null;
+}
+
 export default function TripSelector({ uid, userProfile, trips, sharedTrips, onSelect }) {
-  const [creating,       setCreating]       = useState(false);
-  const [newName,        setNewName]        = useState('');
-  const [startDate,      setStartDate]      = useState('');
-  const [endDate,        setEndDate]        = useState('');
-
-  // 暱稱編輯
-  const [isEditingNickname, setIsEditingNickname] = useState(false);
-  const [nicknameInput,     setNicknameInput]     = useState('');
-
-  // 刪除保護
-  const [deletingTrip,   setDeletingTrip]   = useState(null); // { id, name }
-  const [deleteInput,    setDeleteInput]    = useState('');
+  const [creating,          setCreating]          = useState(false);
+  const [newName,           setNewName]            = useState('');
+  const [startDate,         setStartDate]          = useState('');
+  const [endDate,           setEndDate]            = useState('');
+  const [isEditingNickname, setIsEditingNickname]  = useState(false);
+  const [nicknameInput,     setNicknameInput]      = useState('');
+  const [deletingTrip,      setDeletingTrip]       = useState(null);
+  const [deleteInput,       setDeleteInput]        = useState('');
 
   const displayNickname = userProfile?.nickname
     || userProfile?.displayName
     || userProfile?.email?.split('@')[0]
     || '我';
-
-  const startEditNickname = () => {
-    setNicknameInput(displayNickname);
-    setIsEditingNickname(true);
-  };
 
   const saveNickname = async () => {
     const name = nicknameInput.trim();
@@ -54,18 +67,10 @@ export default function TripSelector({ uid, userProfile, trips, sharedTrips, onS
     setIsEditingNickname(false);
   };
 
-  // 計算天數
-  const tripDays = (s, e) => {
-    if (!s || !e) return null;
-    const diff = (new Date(e) - new Date(s)) / (1000 * 60 * 60 * 24);
-    return diff >= 0 ? Math.round(diff) + 1 : null;
-  };
-
   const handleCreate = async () => {
-    const name  = newName.trim() || '新旅程';
+    const name = newName.trim() || '新旅程';
     const myName = userProfile?.nickname || userProfile?.displayName || userProfile?.email?.split('@')[0] || '自己';
-    const days = tripDays(startDate, endDate);
-    const ref = await addDoc(collection(db, 'users', uid, 'trips'), {
+    await addDoc(collection(db, 'users', uid, 'trips'), {
       ...DEFAULT_TRIP,
       name,
       users: [myName],
@@ -73,143 +78,149 @@ export default function TripSelector({ uid, userProfile, trips, sharedTrips, onS
       tripEndDate:   endDate   || '',
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
+    }).then(ref => {
+      setCreating(false); setNewName(''); setStartDate(''); setEndDate('');
+      onSelect(ref.id);
     });
-    setCreating(false);
-    setNewName('');
-    setStartDate('');
-    setEndDate('');
-    onSelect(ref.id);
   };
 
-  // 刪除：打開確認彈窗
-  const handleDeleteClick = (e, trip) => {
-    e.stopPropagation();
-    setDeletingTrip(trip);
-    setDeleteInput('');
-  };
-
-  // 刪除：確認輸入後執行
   const handleDeleteConfirm = async () => {
     if (deleteInput !== deletingTrip.name) return;
     await deleteDoc(doc(db, 'users', uid, 'trips', deletingTrip.id));
-    setDeletingTrip(null);
-    setDeleteInput('');
+    setDeletingTrip(null); setDeleteInput('');
   };
-
-  const handleSignOut = () => signOut(auth);
 
   const days = tripDays(startDate, endDate);
 
-  return (
-    <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-100 p-6">
-      <div className="max-w-sm mx-auto pt-10">
+  // ── Shared label helper ──────────────────────────────────────────────────
+  const RoleBadge = ({ role }) => (
+    <span className="text-[10px] font-black px-2 py-0.5 rounded-full"
+      style={role==='editor'
+        ? {background:C.primaryLight, color:C.primary}
+        : {background:'#F4F7FA', color:C.muted}}>
+      {role==='editor' ? '✏️ 可編輯' : '👁 只能查看'}
+    </span>
+  );
 
-        {/* Header */}
-        <div className="flex justify-between items-center mb-6">
+  return (
+    <div className="min-h-screen p-5" style={{background:'#F4F7FA', fontFamily:"'DM Sans','Noto Sans TC',sans-serif"}}>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700;900&display=swap');`}</style>
+
+      <div className="max-w-sm mx-auto pt-12">
+
+        {/* ── Header ── */}
+        <div className="flex justify-between items-center mb-5">
           <div>
-            <h1 className="text-2xl font-bold text-slate-800">我的旅程</h1>
-            <p className="text-slate-500 text-sm mt-0.5">選擇或建立一趟旅行</p>
+            <h1 className="text-2xl font-black" style={{color:C.ink, letterSpacing:'-0.03em'}}>我的旅程</h1>
+            <p className="text-sm mt-0.5" style={{color:C.muted}}>選擇或建立一趟旅行</p>
           </div>
-          <button onClick={handleSignOut} className="flex items-center gap-1.5 text-xs text-slate-500 bg-white px-3 py-2 rounded-xl border border-slate-200 hover:bg-red-50 hover:text-red-500 hover:border-red-200 transition-colors shadow-sm">
-            <LogOut size={14} /> 登出
+          <button onClick={()=>signOut(auth)}
+            className="flex items-center gap-1.5 text-xs font-bold px-3 py-2 rounded-xl transition-all active:scale-95"
+            style={{background:C.card, color:C.muted, border:`1px solid ${C.border}`, boxShadow:C.cardShadow}}>
+            <LogOut size={13}/> 登出
           </button>
         </div>
 
-        {/* 暱稱卡片 */}
-        <div className="bg-white rounded-2xl p-4 border border-slate-100 shadow-sm mb-6">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="w-9 h-9 bg-indigo-100 rounded-full flex items-center justify-center text-indigo-600 font-bold text-base shrink-0">
-                {displayNickname[0]?.toUpperCase() || '我'}
-              </div>
-              <div>
-                <div className="text-xs text-slate-400 mb-0.5">我的暱稱（顯示於行程參與人員）</div>
-                {isEditingNickname ? (
-                  <div className="flex items-center gap-1.5">
-                    <input
-                      autoFocus
-                      type="text"
-                      value={nicknameInput}
-                      onChange={e => setNicknameInput(e.target.value)}
-                      onKeyDown={e => e.key === 'Enter' && saveNickname()}
-                      className="border-b border-indigo-400 bg-transparent outline-none text-sm font-bold text-slate-700 w-32 px-1"
-                    />
-                    <button onClick={saveNickname}                    className="text-green-500 hover:text-green-700"><Check size={16}/></button>
-                    <button onClick={() => setIsEditingNickname(false)} className="text-slate-400 hover:text-slate-600"><X size={16}/></button>
-                  </div>
-                ) : (
-                  <div className="font-bold text-slate-700 text-sm">{displayNickname}</div>
-                )}
-              </div>
+        {/* ── 暱稱卡片 ── */}
+        <div className="rounded-2xl p-4 mb-5 flex items-center justify-between"
+          style={{background:C.card, border:`1px solid ${C.border}`, boxShadow:C.cardShadow}}>
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-9 h-9 rounded-full flex items-center justify-center text-base font-black shrink-0"
+              style={{background:C.primaryLight, color:C.primary}}>
+              {displayNickname[0]?.toUpperCase() || '我'}
             </div>
-            {!isEditingNickname && (
-              <button onClick={startEditNickname} className="p-1.5 text-slate-300 hover:text-indigo-500 hover:bg-indigo-50 rounded-lg transition-colors">
-                <Edit2 size={15}/>
-              </button>
-            )}
+            <div className="min-w-0">
+              <p className="text-[11px] mb-0.5" style={{color:C.muted}}>顯示於行程參與人員</p>
+              {isEditingNickname ? (
+                <div className="flex items-center gap-1.5">
+                  <input autoFocus type="text" value={nicknameInput}
+                    onChange={e=>setNicknameInput(e.target.value)}
+                    onKeyDown={e=>e.key==='Enter'&&saveNickname()}
+                    className="border-b text-sm font-black bg-transparent outline-none w-28"
+                    style={{borderColor:C.primary, color:C.ink}}/>
+                  <button onClick={saveNickname}
+                    className="p-0.5 rounded-md" style={{background:C.primary, color:'#fff'}}>
+                    <Check size={13}/>
+                  </button>
+                  <button onClick={()=>setIsEditingNickname(false)}
+                    className="p-0.5 rounded-md" style={{background:'#F4F7FA', color:C.muted}}>
+                    <X size={13}/>
+                  </button>
+                </div>
+              ) : (
+                <p className="text-sm font-black truncate" style={{color:C.ink}}>{displayNickname}</p>
+              )}
+            </div>
           </div>
+          {!isEditingNickname && (
+            <button onClick={()=>{setNicknameInput(displayNickname);setIsEditingNickname(true);}}
+              className="p-1.5 rounded-xl shrink-0" style={{color:C.muted}}>
+              <Edit2 size={15}/>
+            </button>
+          )}
         </div>
 
-        {/* 自己的行程 */}
-        <div className="space-y-3 mb-5">
-          {trips.length === 0 && !creating && (
-            <div className="bg-white rounded-2xl p-8 text-center border border-slate-100 shadow-sm">
+        {/* ── 自己的行程 ── */}
+        <div className="space-y-3 mb-4">
+          {trips.length===0 && !creating && (
+            <div className="rounded-2xl p-10 text-center"
+              style={{background:C.card, border:`1px solid ${C.border}`}}>
               <div className="text-4xl mb-3">✈️</div>
-              <p className="text-slate-500 text-sm">還沒有任何旅程，<br/>點下方按鈕來建立第一趟吧！</p>
+              <p className="text-sm" style={{color:C.muted}}>還沒有任何旅程，<br/>點下方按鈕來建立第一趟吧！</p>
             </div>
           )}
-          {trips.map(trip => (
-            <div
-              key={trip.id}
-              onClick={() => onSelect(trip.id)}
-              className="bg-white rounded-2xl p-4 flex items-center gap-4 cursor-pointer border border-slate-100 shadow-sm hover:border-indigo-300 hover:shadow-md transition-all group"
-            >
-              <div className="w-12 h-12 bg-indigo-50 rounded-xl flex items-center justify-center text-2xl shrink-0">
-                {ICONS[trip.iconIndex ?? 0] ?? '✈️'}
-              </div>
-              <div className="flex-1 min-w-0">
-                <div className="font-bold text-slate-800 truncate group-hover:text-indigo-700">{trip.name}</div>
-                <div className="text-xs text-slate-400 mt-0.5 flex items-center gap-1 flex-wrap">
-                  {trip.tripStartDate && trip.tripEndDate
-                    ? <><Calendar size={10}/>{fmtShort(trip.tripStartDate)} – {fmtShort(trip.tripEndDate)} · </>
-                    : null
-                  }
-                  {trip.itinerary?.length ?? 0} 個行程・{trip.expenses?.length ?? 0} 筆花費
+          {trips.map(trip => {
+            const Icon = TRIP_ICONS[trip.iconIndex % TRIP_ICONS.length] || Plane;
+            return (
+              <div key={trip.id} onClick={()=>onSelect(trip.id)}
+                className="rounded-2xl p-4 flex items-center gap-4 cursor-pointer transition-all active:scale-[0.99] group"
+                style={{background:C.card, border:`1px solid ${C.border}`, boxShadow:C.cardShadow}}>
+                <div className="w-11 h-11 rounded-xl flex items-center justify-center shrink-0"
+                  style={{background:C.primaryLight}}>
+                  <Icon size={20} style={{color:C.primary}} strokeWidth={2.5}/>
                 </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-black truncate" style={{color:C.ink}}>{trip.name}</p>
+                  <p className="text-[11px] mt-0.5 flex items-center gap-1" style={{color:C.muted}}>
+                    {trip.tripStartDate && trip.tripEndDate && (
+                      <><Calendar size={10}/>{fmtShort(trip.tripStartDate)} – {fmtShort(trip.tripEndDate)} · </>
+                    )}
+                    {trip.itinerary?.length ?? 0} 行程・{trip.expenses?.length ?? 0} 筆花費
+                  </p>
+                </div>
+                <button onClick={e=>{e.stopPropagation();setDeletingTrip(trip);setDeleteInput('');}}
+                  className="p-2 rounded-xl opacity-0 group-hover:opacity-100 transition-all"
+                  style={{color:C.danger}}>
+                  <Trash2 size={16}/>
+                </button>
               </div>
-              <button
-                onClick={e => handleDeleteClick(e, trip)}
-                className="p-2 text-slate-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all"
-              >
-                <Trash2 size={16} />
-              </button>
-            </div>
-          ))}
+            );
+          })}
         </div>
 
-        {/* 被分享的行程 */}
+        {/* ── 分享給我的行程 ── */}
         {sharedTrips?.length > 0 && (
-          <div className="mt-2 mb-5">
-            <h2 className="text-sm font-bold text-slate-500 mb-3 flex items-center gap-1">
-              <Users size={14}/> 分享給我的行程
-            </h2>
+          <div className="mb-4">
+            <div className="flex items-center gap-1.5 mb-3">
+              <Users size={13} style={{color:C.muted}}/>
+              <span className="text-[11px] font-black uppercase tracking-widest" style={{color:C.muted}}>分享給我的行程</span>
+            </div>
             <div className="space-y-3">
               {sharedTrips.map(trip => (
-                <div
-                  key={trip.id}
-                  onClick={() => onSelect(trip.id)}
-                  className="bg-white rounded-2xl p-4 flex items-center gap-4 cursor-pointer border border-slate-100 shadow-sm hover:border-purple-300 hover:shadow-md transition-all group"
-                >
-                  <div className="w-12 h-12 bg-purple-50 rounded-xl flex items-center justify-center text-2xl shrink-0">
-                    {ICONS[trip.iconIndex ?? 0] ?? '🤝'}
+                <div key={trip.id} onClick={()=>onSelect(trip.id)}
+                  className="rounded-2xl p-4 flex items-center gap-4 cursor-pointer transition-all active:scale-[0.99]"
+                  style={{background:C.card, border:`1px solid ${C.border}`, boxShadow:C.cardShadow}}>
+                  <div className="w-11 h-11 rounded-xl flex items-center justify-center shrink-0 text-xl"
+                    style={{background:C.primaryLight}}>
+                    {ICON_EMOJIS[trip.iconIndex ?? 0] ?? '🤝'}
                   </div>
                   <div className="flex-1 min-w-0">
-                    <div className="font-bold text-slate-800 truncate group-hover:text-purple-700">
-                      {trip.name || '載入中...'}
-                    </div>
-                    <div className="text-xs text-slate-400 mt-0.5">
-                      {trip.itinerary?.length ?? 0} 個行程・{trip.expenses?.length ?? 0} 筆花費・
-                      {trip.sharedRole === 'editor' ? '✏️ 可編輯' : '👁 只能查看'}
+                    <p className="text-sm font-black truncate" style={{color:C.ink}}>{trip.name || '載入中...'}</p>
+                    <div className="flex items-center gap-2 mt-1">
+                      <span className="text-[11px]" style={{color:C.muted}}>
+                        {trip.itinerary?.length ?? 0} 行程・{trip.expenses?.length ?? 0} 筆花費
+                      </span>
+                      <RoleBadge role={trip.sharedRole}/>
                     </div>
                   </div>
                 </div>
@@ -218,90 +229,91 @@ export default function TripSelector({ uid, userProfile, trips, sharedTrips, onS
           </div>
         )}
 
-        {/* 新增行程表單 */}
+        {/* ── 新增旅程 ── */}
         {creating ? (
-          <div className="bg-white rounded-2xl p-4 border-2 border-indigo-300 shadow-sm space-y-3">
-            <input
-              autoFocus
-              type="text"
+          <div className="rounded-2xl p-4 space-y-3"
+            style={{background:C.card, border:`1.5px solid ${C.primary}`, boxShadow:C.cardShadow}}>
+            <input autoFocus type="text"
               placeholder="旅程名稱（如：東京五天四夜）"
-              value={newName}
-              onChange={e => setNewName(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && handleCreate()}
-              className="w-full border border-slate-200 rounded-xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-indigo-400"
-            />
+              value={newName} onChange={e=>setNewName(e.target.value)}
+              onKeyDown={e=>e.key==='Enter'&&handleCreate()}
+              className="w-full border rounded-2xl px-4 py-3 text-sm font-bold outline-none"
+              style={{borderColor:C.border, color:C.ink}}/>
 
-            {/* 日期區間 */}
-            <div className="bg-indigo-50 rounded-xl p-3 space-y-2">
-              <div className="text-xs font-bold text-indigo-700 flex items-center gap-1 mb-1">
-                <Calendar size={13}/> 旅行日期（可跳過）
+            {/* 日期 */}
+            <div className="rounded-2xl p-3 space-y-2" style={{background:C.primaryLight}}>
+              <div className="flex items-center gap-1.5">
+                <Calendar size={12} style={{color:C.primary}}/>
+                <span className="text-[11px] font-black" style={{color:C.primary}}>旅行日期（可跳過）</span>
               </div>
               <div className="flex gap-2 items-center">
-                <input
-                  type="date"
-                  value={startDate}
-                  onChange={e => {
-                    setStartDate(e.target.value);
-                    if (endDate && e.target.value > endDate) setEndDate('');
-                  }}
-                  className="flex-1 border border-indigo-200 rounded-lg px-2 py-2 text-xs bg-white outline-none focus:ring-2 focus:ring-indigo-400"
-                />
-                <span className="text-slate-400 text-xs shrink-0">→</span>
-                <input
-                  type="date"
-                  value={endDate}
-                  min={startDate}
-                  onChange={e => setEndDate(e.target.value)}
-                  className="flex-1 border border-indigo-200 rounded-lg px-2 py-2 text-xs bg-white outline-none focus:ring-2 focus:ring-indigo-400"
-                />
+                <input type="date" value={startDate}
+                  onChange={e=>{setStartDate(e.target.value);if(endDate&&e.target.value>endDate)setEndDate('');}}
+                  className="flex-1 border rounded-xl px-2 py-2 text-xs outline-none"
+                  style={{borderColor:`${C.primary}44`, color:C.ink, background:C.card}}/>
+                <span style={{color:C.muted, fontSize:12}}>→</span>
+                <input type="date" value={endDate} min={startDate}
+                  onChange={e=>setEndDate(e.target.value)}
+                  className="flex-1 border rounded-xl px-2 py-2 text-xs outline-none"
+                  style={{borderColor:`${C.primary}44`, color:C.ink, background:C.card}}/>
               </div>
               {days && (
-                <div className="text-center text-xs font-bold text-indigo-600">
-                  共 {days} 天 ({fmtShort(startDate)} – {fmtShort(endDate)})
-                </div>
+                <p className="text-center text-xs font-black" style={{color:C.primary}}>
+                  共 {days} 天（{fmtShort(startDate)} – {fmtShort(endDate)}）
+                </p>
               )}
             </div>
 
             <div className="flex gap-2">
-              <button onClick={() => { setCreating(false); setStartDate(''); setEndDate(''); }} className="flex-1 py-2.5 border border-slate-200 rounded-xl text-slate-500 text-sm font-medium hover:bg-slate-50">取消</button>
-              <button onClick={handleCreate} className="flex-1 py-2.5 bg-indigo-600 text-white rounded-xl text-sm font-bold hover:bg-indigo-700 shadow-sm">建立旅程</button>
+              <button onClick={()=>{setCreating(false);setStartDate('');setEndDate('');}}
+                className="flex-1 py-3 rounded-2xl text-sm font-bold"
+                style={{background:'#F4F7FA', color:C.muted}}>
+                取消
+              </button>
+              <button onClick={handleCreate}
+                className="flex-1 py-3 rounded-2xl text-sm font-black text-white"
+                style={{background:C.primary}}>
+                建立旅程
+              </button>
             </div>
           </div>
         ) : (
-          <button
-            onClick={() => setCreating(true)}
-            className="w-full py-4 border-2 border-dashed border-indigo-300 text-indigo-600 font-bold rounded-2xl flex justify-center items-center gap-2 hover:bg-indigo-50 transition-colors"
-          >
-            <Plus size={20} /> 新增旅程
+          <button onClick={()=>setCreating(true)}
+            className="w-full py-4 rounded-2xl flex justify-center items-center gap-2 font-black text-sm border-2 border-dashed transition-all active:scale-[0.99]"
+            style={{borderColor:`${C.primary}55`, color:C.primary}}>
+            <Plus size={18}/> 新增旅程
           </button>
         )}
       </div>
 
-      {/* 刪除確認彈窗 */}
+      {/* ── 刪除確認彈窗 ── */}
       {deletingTrip && (
-        <div className="fixed inset-0 bg-slate-900/50 z-50 flex items-center justify-center p-6">
-          <div className="bg-white rounded-2xl p-6 w-full max-w-sm shadow-xl">
-            <h3 className="font-bold text-lg text-slate-800 mb-1">刪除行程</h3>
-            <p className="text-sm text-slate-500 mb-4">
-              此操作<span className="font-bold text-red-500">無法復原</span>。<br/>
-              請輸入行程名稱「<span className="font-bold text-slate-700">{deletingTrip.name}</span>」以確認刪除。
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-6"
+          style={{background:'rgba(0,0,0,0.4)'}}>
+          <div className="w-full rounded-3xl p-6 shadow-2xl" style={{background:C.card, maxWidth:'360px'}}>
+            <h3 className="text-lg font-black mb-1" style={{color:C.ink}}>刪除行程</h3>
+            <p className="text-sm mb-4 leading-relaxed" style={{color:C.muted}}>
+              此操作<span className="font-black" style={{color:C.danger}}>無法復原</span>。<br/>
+              請輸入行程名稱「<span className="font-black" style={{color:C.ink}}>{deletingTrip.name}</span>」以確認刪除。
             </p>
-            <input
-              autoFocus
-              type="text"
+            <input autoFocus type="text"
               placeholder="輸入行程名稱..."
-              value={deleteInput}
-              onChange={e => setDeleteInput(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && handleDeleteConfirm()}
-              className="w-full border border-slate-200 rounded-xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-red-400 mb-3"
-            />
+              value={deleteInput} onChange={e=>setDeleteInput(e.target.value)}
+              onKeyDown={e=>e.key==='Enter'&&handleDeleteConfirm()}
+              className="w-full border rounded-2xl px-4 py-3 text-sm outline-none mb-3"
+              style={{borderColor:C.border, color:C.ink}}/>
             <div className="flex gap-2">
-              <button onClick={() => { setDeletingTrip(null); setDeleteInput(''); }} className="flex-1 py-2.5 border border-slate-200 rounded-xl text-slate-500 text-sm font-medium hover:bg-slate-50">取消</button>
-              <button
-                onClick={handleDeleteConfirm}
-                disabled={deleteInput !== deletingTrip.name}
-                className="flex-1 py-2.5 bg-red-500 text-white rounded-xl text-sm font-bold hover:bg-red-600 disabled:opacity-40 disabled:cursor-not-allowed shadow-sm"
-              >確認刪除</button>
+              <button onClick={()=>{setDeletingTrip(null);setDeleteInput('');}}
+                className="flex-1 py-3 rounded-2xl text-sm font-bold"
+                style={{background:'#F4F7FA', color:C.muted}}>
+                取消
+              </button>
+              <button onClick={handleDeleteConfirm}
+                disabled={deleteInput!==deletingTrip.name}
+                className="flex-1 py-3 rounded-2xl text-sm font-black text-white transition-all"
+                style={{background:deleteInput===deletingTrip.name ? C.danger : C.muted}}>
+                確認刪除
+              </button>
             </div>
           </div>
         </div>

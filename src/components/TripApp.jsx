@@ -11,19 +11,20 @@
  *   --card     : #FFFFFF   (card bg)
  *   --border   : #E5E5E2   (dividers)
  */
-import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { doc, updateDoc, serverTimestamp, setDoc, getDocs, getDoc, collection, query, where, onSnapshot } from 'firebase/firestore';
 import { db } from '../firebase/config';
 import ExpenseFormModal from './ExpenseFormModal';
+import { useConfirm } from './ConfirmModal';
 import {
   MapPin, Clock, Globe, ShoppingBag, Ticket, Navigation,
   Car, Plus, Edit2, Trash2, DollarSign,
-  ChevronDown, ChevronUp, Check, X,
+  ChevronDown, Check, X,
   ListTodo, Calendar, Settings,
   Star, Plane, Luggage, Camera as CameraIcon,
   ArrowLeft, ArrowRight, Share2,
-  Wallet, Map, CheckSquare, MoreHorizontal,
-  Hotel, Lock, Unlock, Tag, Save, Users, CreditCard,
+  Wallet, Map, MoreHorizontal,
+  Hotel, Lock, Unlock, Users,
 } from 'lucide-react';
 
 /* ── Design tokens ── */
@@ -48,7 +49,6 @@ const C = {
 // ─── 常數 ─────────────────────────────────────────────────────────────────────
 const TRIP_ICONS  = [Plane, MapPin, Luggage, CameraIcon];
 
-// 交通工具 Emoji 對照（可依需求擴充）
 const TRANSPORT_EMOJI = {
   '飛機': '✈️', '航班': '✈️',
   '電車': '🚃', '捷運': '🚇', '地鐵': '🚇', '鐵路': '🚆', '新幹線': '🚄',
@@ -63,7 +63,6 @@ const getTransportEmoji = (mode) => {
   const match = Object.keys(TRANSPORT_EMOJI).find(k => mode.includes(k));
   return match ? TRANSPORT_EMOJI[match] : '🚌';
 };
-
 
 // ─── Utils ────────────────────────────────────────────────────────────────────
 function getDatesInRange(start, end) {
@@ -130,7 +129,6 @@ const MOCK_DATA = {
     { date: '2025-05-01', name: 'APA Hotel 道頓堀', location: '大阪市中央區' },
   ],
   savedSpots: [],
-  flexTodos: [],
 };
 
 // Firestore 不接受 undefined，遞迴清除
@@ -299,6 +297,7 @@ function parseMarkdown(mdText, tripStartDate) {
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 export default function TripApp({ uid, currentUserUid, currentUserName, tripId, initialData = MOCK_DATA, readOnly = false, onBack }) {
+  const { confirm, ConfirmUI } = useConfirm();
   // ── Core state ──────────────────────────────────────────────────────────────
   const [tripName,       setTripName]       = useState(initialData.name          || '新旅程');
   const [tripIconIndex,  setTripIconIndex]  = useState(initialData.iconIndex     ?? 0);
@@ -388,10 +387,10 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
     }));
     setEditingUserId(null);
   };
-  const removeUser = (u, idx) => {
+  const removeUser = async (u, idx) => {
     if (idx===0) { alert('建立者不可被刪除'); return; }
     if (users.length<=1) { alert('至少需要保留一位成員'); return; }
-    if (!window.confirm(`刪除「${u}」？系統將重新分配其相關花費。`)) return;
+    if (!await confirm(`刪除「${u}」？系統將重新分配其相關花費。`, '確認刪除')) return;
     const remaining = users.filter(x=>x!==u);
     setUsers(remaining);
     setExpenses(expenses.map(exp => {
@@ -422,29 +421,20 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
   // ── Rate handlers ────────────────────────────────────────────────────────────
   const addRate    = () => { if(newCurrency.trim()&&newRateValue) { setRates({...rates,[newCurrency.trim().toUpperCase()]:parseFloat(newRateValue)}); setNewCurrency(''); setNewRateValue(''); } };
   const updateRate = (c,v) => { if(v) setRates({...rates,[c]:parseFloat(v)}); };
-  const removeRate = (c) => {
+  const removeRate = async (c) => {
     if (c===baseCurrency) { alert('基準幣別不可刪除'); return; }
-    if (window.confirm(`刪除 ${c}？`)) { const r={...rates}; delete r[c]; setRates(r); }
+    if (await confirm(`確定刪除幣別 ${c}？`, '確認刪除')) { const r={...rates}; delete r[c]; setRates(r); }
   };
-  // inline 編輯表單資料（key = item.id）
-  const [inlineEdits,    setInlineEdits]    = useState({});
-  const setInlineField = (id, field, val) =>
-    setInlineEdits(prev => ({...prev, [id]: {...(prev[id]||{}), [field]: val}}));
-  // 編輯模式展開的卡片 id（點 ... 展開 inline 表單）
+  // 編輯模式展開的卡片 id
   const [editExpandedId, setEditExpandedId] = useState(null);
-  const toggleEditExpand = (id) =>
-    setEditExpandedId(prev => prev === id ? null : id);
   // 點選移動
   const [movingItemId,   setMovingItemId]   = useState(null);
   // 各天 section 的 ref，用於快速捲動
   const dayRefs = React.useRef({});
   const itineraryScrollRef = React.useRef(null);
   // 卡片詳情 / 編輯 Sheet
-  const [detailSheet,    setDetailSheet]    = useState(null); // item object
-  const [detailEditing,  setDetailEditing]  = useState(false);
+  const [detailSheet,    setDetailSheet]    = useState(null);
   const [detailData,     setDetailData]     = useState({});
-  // 左滑刪除：記錄哪張卡片正在 swiped
-  const [swipedId,       setSwipedId]       = useState(null);
   // FAB 展開狀態
   const [fabOpen,        setFabOpen]        = useState(false);
 
@@ -500,7 +490,7 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
   const sortedDates   = useMemo(() => [...new Set(itinerary.map(i => i.date || '未定日期'))].sort(), [itinerary]);
   const currentDate   = sortedDates[selectedDay] || '';
 
-  // ─── Finance computed（與舊版一致）─────────────────────────────────────────
+  // ──────────────────────────────────────────────────────────────────────
   const convertedExpenses = useMemo(() => expenses.map(exp => {
     const expRate  = rates[exp.currency]  || 1;
     const baseRate = rates[baseCurrency] || 1;
@@ -539,8 +529,7 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
 
   const settlement = useMemo(() => calcSettlement(financeSummary.userStats), [financeSummary]);
 
-  // ─── Handlers ────────────────────────────────────────────────────────────────
-  const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(''), 2000); };
+    const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(''), 2000); };
 
   const openAddItem = (type, date) => {
     setAddItemData(type === 'transport'
@@ -619,14 +608,104 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
     setMarkdownStatus(`✅ 匯入 ${itineraryItems.length} 個行程、${checklistItems.length} 個清單項目、${accommodationItems.length} 筆住宿、${savedSpotItems.length} 個收藏景點`);
     setMarkdownText('');
   };
+
+  const exportMarkdown = () => {
+    const lines = [];
+    lines.push(`# ${tripName}`);
+    lines.push(`- 日期：${tripStartDate||'未設定'} ~ ${tripEndDate||'未設定'}`);
+    lines.push(`- 幣別：${baseCurrency}`);
+    lines.push('');
+
+    // 必帶物品
+    const mustHave = checklist.filter(i => !i.type || i.type !== 'ticket');
+    if (mustHave.length > 0) {
+      lines.push('## 必帶物品');
+      mustHave.forEach(i => lines.push(`- ${i.text}`));
+      lines.push('');
+    }
+
+    // 住宿
+    if (accommodations.length > 0) {
+      lines.push('## 住宿');
+      accommodations.forEach(a => {
+        lines.push(`- 入住：${a.checkIn||a.date||''}`);
+        lines.push(`  退房：${a.checkOut||''}`);
+        lines.push(`  名稱：${a.name||''}`);
+        if (a.location) lines.push(`  地點：${a.location}`);
+      });
+      lines.push('');
+    }
+
+    // 行程（依日期分組排序）
+    const sortedItems = [...itinerary].sort((a, b) => {
+      if (a.date < b.date) return -1;
+      if (a.date > b.date) return 1;
+      return (a.time || '').localeCompare(b.time || '');
+    });
+    const byDate = sortedItems.reduce((acc, item) => {
+      const d = item.date || '未定日期';
+      if (!acc[d]) acc[d] = [];
+      acc[d].push(item);
+      return acc;
+    }, {});
+
+    if (Object.keys(byDate).length > 0) {
+      lines.push('## 行程');
+      Object.entries(byDate).forEach(([date, items]) => {
+        lines.push(`### ${date}`);
+        items.forEach(item => {
+          if (item.type === 'transport') {
+            lines.push(`#### [交通] ${item.time || ''}`);
+            if (item.transportMode) lines.push(`- 交通方式：${item.transportMode}`);
+            if (item.from)          lines.push(`- 搭車地點：${item.from}`);
+            if (item.to)            lines.push(`- 下車地點：${item.to}`);
+            if (item.title)         lines.push(`- 班次名稱：${item.title}`);
+            if (item.duration)      lines.push(`- 預估時間：${item.duration}`);
+            if (item.price)         lines.push(`- 票價：${item.price}${item.priceCurrency&&item.priceCurrency!==baseCurrency?' '+item.priceCurrency:''}`);
+            if (item.needTicket)    lines.push(`- 需提前購票：是`);
+            if (item.ticketDeadline)lines.push(`- 購票截止：${item.ticketDeadline}`);
+            if (item.url)           lines.push(`- 購票連結：${item.url}`);
+            if (item.notes)         lines.push(`- 備註：${item.notes}`);
+          } else {
+            lines.push(`#### [景點] ${item.time || '00:00'} ${item.title}`);
+            if (item.location)      lines.push(`- 地點：${item.location}`);
+            if (item.notes)         lines.push(`- 備註：${item.notes}`);
+            if (item.tickets)       lines.push(`- 門票：${item.tickets}`);
+            if (item.hours)         lines.push(`- 營業時間：${item.hours}`);
+            if (item.website)       lines.push(`- 官網：${item.website}`);
+          }
+        });
+        lines.push('');
+      });
+    }
+
+    // 收藏景點
+    if (savedSpots.length > 0) {
+      lines.push('## 收藏景點');
+      savedSpots.forEach(s => {
+        lines.push(`- 名稱：${s.name}`);
+        if (s.note) lines.push(`  備註：${s.note}`);
+        if (s.url)  lines.push(`  連結：${s.url}`);
+      });
+      lines.push('');
+    }
+
+    const md = lines.join('\n');
+    const blob = new Blob([md], { type: 'text/markdown;charset=utf-8;' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `${tripName}.md`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    showToast('✅ 已匯出 Markdown');
+  };
   const toggleChecklist = (id) => setChecklist(list => list.map(i => i.id === id ? { ...i, checked: !i.checked } : i));
   const addChecklistItem = () => {
     if (!newChecklistItem.trim()) return;
     setChecklist(list => [...list, { id: crypto.randomUUID(), text: newChecklistItem.trim(), checked: false }]);
     setNewChecklistItem('');
   };
-  const deleteChecklistItem = (id) => {
-    if (!window.confirm('確定要刪除這個清單項目嗎？')) return;
+  const deleteChecklistItem = async (id) => {
+    if (!await confirm('確定要刪除這個清單項目嗎？', '確認刪除')) return;
     setChecklist(list => list.filter(i => i.id !== id));
   };
   const toggleShop = (iId, sId) => setItinerary(list => list.map(i => i.id === iId
@@ -670,8 +749,8 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
     showToast(clean.id ? '✅ 已更新帳務' : '✅ 已記帳');
   };
 
-  const deleteExpense = (id) => {
-    if (!window.confirm('確定刪除此筆紀錄？')) return;
+  const deleteExpense = async (id) => {
+    if (!await confirm('確定刪除此筆紀錄？', '確認刪除')) return;
     lastLocalSaveTime.current = Date.now();
     setExpenses(prev => prev.filter(e => e.id !== id));
     showToast('🗑 已刪除');
@@ -689,13 +768,11 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
   };
   React.useEffect(() => { if (sheetOpen) setTimeout(() => sheetInputRef.current?.focus(), 80); }, [sheetOpen]);
 
-  // 左滑刪除：統一 swipe state（key=id, val=type）
-  const [swipeMap, setSwipeMap] = useState({});
+    const [swipeMap, setSwipeMap] = useState({});
   const openSwipe = (id) => setSwipeMap(prev => ({...prev, [id]: true}));
   const closeSwipe = (id) => setSwipeMap(prev => { const n={...prev}; delete n[id]; return n; });
   const closeAllSwipe = () => setSwipeMap({});
 
-  // 清單項目編輯
   const [editingCheckId, setEditingCheckId] = useState(null);
   const [editingCheckText, setEditingCheckText] = useState('');
   const startEditCheck = (item) => { setEditingCheckId(item.id); setEditingCheckText(item.text); };
@@ -706,12 +783,9 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
     setEditingCheckId(null);
   };
 
-  // ─── Detail sheet handlers ──────────────────────────────────────────────────
-  const openDetailSheet = (item) => {
-    setDetailSheet(item);
-    setDetailEditing(true);   // 點 ... 直接進入編輯
+    const openDetailSheet = (item) => {
+    setDetailSheet(item);   // 點 ... 直接進入編輯
     setDetailData({...item});
-    setSwipedId(null);
     setEditExpandedId(null);
   };
   const saveDetailSheet = () => {
@@ -737,15 +811,14 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
     setDetailSheet(null);
     showToast('已儲存 ✓');
   };
-  const deleteFromDetail = () => {
-    if (!window.confirm('確定要刪除這個行程嗎？')) return;
+  const deleteFromDetail = async () => {
+    if (!await confirm('確定要刪除這個行程嗎？', '確認刪除')) return;
     setItinerary(list => list.filter(i => i.id !== detailSheet.id));
     setDetailSheet(null);
     showToast('已刪除');
   };
 
-  // ─── Move item logic ───────────────────────────────────────────────────────
-  const handleMoveTarget = (targetId, targetDate) => {
+    const handleMoveTarget = (targetId, targetDate) => {
     if (!movingItemId || movingItemId === targetId) { setMovingItemId(null); return; }
     setItinerary(prev => {
       const arr = [...prev];
@@ -787,16 +860,14 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
     }
   };
 
-  // ─── Online state ─────────────────────────────────────────────────────────
-  const [isOnline, setIsOnline] = React.useState(navigator.onLine);
+    const [isOnline, setIsOnline] = React.useState(navigator.onLine);
   React.useEffect(() => {
     const on = () => setIsOnline(true), off = () => setIsOnline(false);
     window.addEventListener('online', on); window.addEventListener('offline', off);
     return () => { window.removeEventListener('online', on); window.removeEventListener('offline', off); };
   }, []);
 
-  // ─── RENDER helpers ────────────────────────────────────────────────────────
-  const todayStr = new Date().toISOString().split('T')[0];
+    const todayStr = new Date().toISOString().split('T')[0];
   const dayLabel = (d) => {
     if (!d) return '';
     const dt = new Date(d);
@@ -882,7 +953,7 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
               {/* 行程 mode 才顯示編輯按鈕 */}
               {mode==='itinerary' && (
                 <button
-                  onClick={()=>{ setIsEditMode(v=>!v); setMovingItemId(null); setFabOpen(false); setSwipedId(null); }}
+                  onClick={()=>{ setIsEditMode(v=>!v); setMovingItemId(null); setFabOpen(false); }}
                   className="p-2 rounded-xl transition-all"
                   title={isEditMode ? '切換瀏覽模式' : '切換編輯模式'}
                   style={isEditMode ? {background:C.primary, color:'#fff'} : {background:C.primaryLight, color:C.primary}}>
@@ -1008,8 +1079,10 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                               <ChevronDown size={13} className={`transition-transform ${showDoneTickets?'rotate-180':''}`}/>已完成購票 ({doneTickets.length})
                             </button>
                             {showDoneTickets && doneTickets.map(item=>(
-                              <div key={item.id} className="flex items-center gap-3 px-4 py-3.5" style={{borderBottom:`1px solid ${C.border}`,opacity:0.5}}>
-                                <div className="w-6 h-6 rounded-full flex items-center justify-center shrink-0" style={{background:'#4ade80'}}><Check size={12} color="#fff"/></div>
+                              <div key={item.id} className="flex items-center gap-3 px-4 py-3.5" style={{borderBottom:`1px solid ${C.border}`}}>
+                                <button onClick={()=>toggleChecklist(item.id)} className="w-6 h-6 rounded-full flex items-center justify-center shrink-0" style={{background:'#4ade80'}}>
+                                  <Check size={12} color="#fff"/>
+                                </button>
                                 <span className="flex-1 text-sm line-through" style={{color:C.muted}}>{item.text}</span>
                               </div>
                             ))}
@@ -1541,10 +1614,9 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                           {isEditMode && !isTransport && swipeMap[item.id] && (
                             <div className="flex items-center justify-end px-4 -mt-3 mb-3">
                               <button
-                                onClick={() => {
-                                  if (!window.confirm('確定要刪除這個行程嗎？')) return;
+                                onClick={async () => {
+                                  if (!await confirm('確定要刪除這個行程嗎？', '確認刪除')) return;
                                   setItinerary(list => list.filter(i => i.id !== item.id));
-                                  setSwipedId(null);
                                   showToast('已刪除');
                                 }}
                                 className="flex items-center gap-1.5 px-4 py-2.5 rounded-2xl text-sm font-black text-white"
@@ -1740,10 +1812,15 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                               {rel&&<span className="text-[11px] truncate" style={{color:C.primary}}>📍{rel.title}</span>}
                             </div>
                           </div>
-                          <div className="shrink-0 text-right">
+                          <div className="shrink-0 text-right flex flex-col items-end">
                             <p className="text-sm font-black" style={{color:C.ink}}>{exp.currency} {exp.amount?.toLocaleString()}</p>
                             {!isBase&&<p className="text-xs mt-0.5" style={{color:'#B6C9CF'}}>≈ {baseCurrency} {converted.toLocaleString()}</p>}
-                            {!readOnly&&<button onClick={e=>{e.stopPropagation();deleteExpense(exp.id);}} className="text-xs mt-1 block font-bold" style={{color:C.danger}}>刪除</button>}
+                            <div className="flex-1"/>
+                            {!readOnly&&<button onClick={e=>{e.stopPropagation();deleteExpense(exp.id);}}
+                              className="text-[11px] mt-2 px-2 py-0.5 rounded-lg font-bold"
+                              style={{background:C.dangerLight,color:'#B03A2E'}}>
+                              刪除
+                            </button>}
                           </div>
                         </div>
                       );
@@ -2052,8 +2129,6 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
           </div>
         </div>
       )}
-
-
 
       {/* ══ 新增景點/交通 MODAL ══ */}
       {addItemModal && (
@@ -2372,10 +2447,15 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                 )}
               </div>
 
-              {/* Markdown 匯入 */}
+              {/* Markdown 匯入／匯出 */}
               <div>
-                <p className="text-[11px] font-black uppercase tracking-widest mb-3" style={{color:C.muted}}>匯入行程</p>
-                <p className="text-xs mb-3" style={{color:C.muted}}>支援行程、住宿、收藏景點、必帶物品一次匯入</p>
+                <p className="text-[11px] font-black uppercase tracking-widest mb-1" style={{color:C.muted}}>行程 Markdown</p>
+                <p className="text-xs mb-3" style={{color:C.muted}}>支援行程、住宿、收藏景點、必帶物品，可直接貼給 AI 請它規劃</p>
+                {/* 匯出 */}
+                <button onClick={()=>{exportMarkdown();}} className="w-full py-2.5 rounded-2xl text-sm font-black text-white mb-2" style={{background:C.primary}}>
+                  📤 匯出 Markdown（給 AI 用）
+                </button>
+                {/* 匯入 */}
                 {!isMarkdownOpen?(
                   <button onClick={()=>setIsMarkdownOpen(true)} className="w-full py-2.5 rounded-2xl text-sm font-black" style={{background:C.primaryLight,color:C.primary}}>📋 貼上 Markdown 匯入</button>
                 ):(
@@ -2392,7 +2472,7 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
 
               {/* 版本號 */}
               <div className="text-center pb-2">
-                <span className="text-xs font-mono" style={{color:C.muted}}>v0.7.0</span>
+                <span className="text-xs font-mono" style={{color:C.muted}}>v0.7.5</span>
               </div>
 
             </div>
@@ -2433,10 +2513,10 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
         </div>
       )}
 
-
       {/* ══ EXPENSE MODALS ══ */}
       {addingExpenseFor && <ExpenseFormModal expenseItem={addingExpenseFor} users={users} rates={rates} baseCurrency={baseCurrency} categories={categories} onSave={saveExpense} onClose={()=>setAddingExpenseFor(null)}/>}
       {editingExpense && <ExpenseFormModal key={`edit-${editingExpense.id}`} initialData={editingExpense} expenseItem={itinerary.find(i=>i.id===editingExpense.itineraryId)||{title:'一般花費'}} users={users} rates={rates} baseCurrency={baseCurrency} categories={categories} onSave={saveExpense} onClose={()=>setEditingExpense(null)}/>}
+      {ConfirmUI}
 
       {/* ══ BOTTOM NAV ══ */}
       <nav className="shrink-0 z-40" style={{background:C.primary}}>
