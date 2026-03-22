@@ -185,7 +185,8 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
   const [showDoneRegular,setShowDoneRegular]= useState(false);
   const [newChecklistItem, setNewChecklistItem] = useState('');
   const [toast,          setToast]          = useState('');
-  const [saveStatus,     setSaveStatus]     = useState('saved');
+  const [saveStatus,     setSaveStatus]     = useState('saved'); // 'saving' | 'saved' | 'error' | 'offline'
+  const [isOnline,       setIsOnline]       = useState(navigator.onLine);
   // Settings modal
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isShareOpen,    setIsShareOpen]    = useState(false);
@@ -314,15 +315,36 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
   const debouncedPayload = useDebounce(payload, 1200);
   const isFirstSave = useRef(true);
   const lastLocalSaveTime = useRef(0);
+  const prevSavedPayload = useRef(null);
 
   useEffect(() => {
-    if (isFirstSave.current) { isFirstSave.current = false; return; }
+    if (isFirstSave.current) {
+      isFirstSave.current = false;
+      prevSavedPayload.current = debouncedPayload;
+      return;
+    }
     if (readOnly || !uid || !tripId) return;
+    if (!isOnline) { setSaveStatus('offline'); return; }
+
+    // 只寫有改動的欄位（merge mode）
+    const prev = prevSavedPayload.current || {};
+    const KEYS = ['name','iconIndex','tripStartDate','tripEndDate','users','rates','baseCurrency',
+      'categories','checklist','itinerary','expenses','accommodations','savedSpots','editors','viewers'];
+    const changes = {};
+    for (const k of KEYS) {
+      if (JSON.stringify(prev[k]) !== JSON.stringify(debouncedPayload[k])) {
+        changes[k] = debouncedPayload[k];
+      }
+    }
+    if (Object.keys(changes).length === 0) return; // 沒有實際改動，跳過
+
+    prevSavedPayload.current = debouncedPayload;
     setSaveStatus('saving');
-    updateDoc(doc(db, 'users', uid, 'trips', tripId),
-      cleanForFirestore({ ...debouncedPayload, updatedAt: serverTimestamp() })
+    updateDoc(
+      doc(db, 'users', uid, 'trips', tripId),
+      cleanForFirestore({ ...changes, updatedAt: serverTimestamp() })
     ).then(() => setSaveStatus('saved')).catch(() => setSaveStatus('error'));
-  }, [debouncedPayload, uid, tripId, readOnly]);
+  }, [debouncedPayload, uid, tripId, readOnly, isOnline]);
 
   // onSnapshot — expenses 即時同步
   useEffect(() => {
@@ -732,10 +754,12 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
     }
   };
 
-    const [isOnline, setIsOnline] = React.useState(navigator.onLine);
-  React.useEffect(() => {
-    const on = () => setIsOnline(true), off = () => setIsOnline(false);
-    window.addEventListener('online', on); window.addEventListener('offline', off);
+  // 網路狀態監聽 — 離線時同步更新 saveStatus
+  useEffect(() => {
+    const on  = () => { setIsOnline(true);  setSaveStatus(s => s === 'offline' ? 'saved' : s); };
+    const off = () => { setIsOnline(false); setSaveStatus('offline'); };
+    window.addEventListener('online',  on);
+    window.addEventListener('offline', off);
     return () => { window.removeEventListener('online', on); window.removeEventListener('offline', off); };
   }, []);
 
@@ -755,8 +779,8 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
   const checkPct = checkTotal>0 ? Math.round(checkDone/checkTotal*100) : 0;
 
   return (
-    <div className="relative min-h-screen max-w-md mx-auto flex flex-col"
-      style={{background:'#FFFFFF', fontFamily:"'DM Sans','Noto Sans TC',sans-serif", height:'100dvh', overflow:'hidden'}}>
+    <div className="max-w-md mx-auto flex flex-col"
+      style={{background:'#FFFFFF', fontFamily:"'DM Sans','Noto Sans TC',sans-serif", height:'100dvh', overflow:'hidden', paddingTop:'env(safe-area-inset-top, 0px)'}}>
 
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700;900&display=swap');
@@ -766,9 +790,6 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
         .fab { transition: transform 0.15s ease, box-shadow 0.15s ease; }
         .fab:active { transform: scale(0.93); }
         .scroll-area { overflow-y: auto; -webkit-overflow-scrolling: touch; }
-        @supports (padding-bottom: env(safe-area-inset-bottom)) {
-          .safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
-        }
       `}</style>
 
       {/* Toast */}
@@ -779,10 +800,19 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
         </div>
       )}
 
-      {/* 移動中提示 banner */}
+      {/* 離線橫條 banner */}
+      {!isOnline && (
+        <div className="shrink-0 flex items-center justify-center gap-2 px-4 py-2"
+          style={{background:C.warning}}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round">
+            <line x1="1" y1="1" x2="23" y2="23"/><path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55M5 12.55a10.94 10.94 0 0 1 5.17-2.39M10.71 5.05A16 16 0 0 1 22.56 9M1.42 9a15.91 15.91 0 0 1 4.7-2.88M8.53 16.11a6 6 0 0 1 6.95 0M12 20h.01"/>
+          </svg>
+          <p className="text-xs font-black text-white">離線中 — 資料已暫存，上線後自動同步</p>
+        </div>
+      )}
       {movingItemId && (
-        <div className="fixed top-0 inset-x-0 z-[90] flex items-center justify-between px-4 py-3"
-          style={{background:C.warning, maxWidth:'448px', left:'50%', transform:'translateX(-50%)'}}>
+        <div className="shrink-0 flex items-center justify-between px-4 py-3"
+          style={{background:C.warning}}>
           <p className="text-sm font-black text-white">
             選擇要插入的位置或目標天
           </p>
@@ -794,8 +824,8 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
       )}
 
       {/* ══ HEADER（固定，不捲動）══ */}
-      <header className="shrink-0 border-b z-30" style={{background:C.card, borderColor:C.border}}>
-        <div className="flex items-center gap-3 px-4 pt-11 pb-2">
+      <header className="shrink-0 border-b" style={{background:C.card, borderColor:C.border}}>
+        <div className="flex items-center gap-3 px-4 pt-3 pb-2">
           {onBack && (
             <button onClick={onBack} className="p-1 -ml-1 active:opacity-60" style={{color:C.ink}}>
               <ArrowLeft size={22} strokeWidth={2}/>
@@ -819,10 +849,25 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                 {tripName}
               </h1>
           }
-          {/* 同步狀態 dot */}
-          <div className="w-2.5 h-2.5 rounded-full shrink-0 transition-colors duration-500"
-            style={{background: isOnline ? '#4ade80' : C.warning}}
-            title={isOnline?'已連線':'離線中'}/>
+          {/* 儲存/連線狀態 */}
+          {(() => {
+            if (!isOnline) return (
+              <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{background:C.warning}} title="離線中"/>
+            );
+            if (saveStatus === 'saving') return (
+              <div className="w-4 h-4 shrink-0 flex items-center justify-center">
+                <svg className="animate-spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={C.primary} strokeWidth="2.5">
+                  <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/>
+                </svg>
+              </div>
+            );
+            if (saveStatus === 'error') return (
+              <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{background:C.danger}} title="同步失敗"/>
+            );
+            return (
+              <div className="w-2.5 h-2.5 rounded-full shrink-0 transition-colors duration-500" style={{background:'#4ade80'}} title="已同步"/>
+            );
+          })()}
           {!readOnly && (
             <>
               {/* 行程 mode 才顯示編輯按鈕 */}
@@ -2362,7 +2407,7 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
 
               {/* 版本號 */}
               <div className="text-center pb-2">
-                <span className="text-xs font-mono" style={{color:C.muted}}>v0.7.5</span>
+                <span className="text-xs font-mono" style={{color:C.muted}}>v0.8.0</span>
               </div>
 
             </div>
