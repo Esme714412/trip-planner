@@ -208,6 +208,11 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
   const [addingSpotToDate,setAddingSpotToDate]= useState(null);
   const [expandedSpotId, setExpandedSpotId] = useState(null);
   const [pendingScrollToDate, setPendingScrollToDate] = useState(null);
+  // 購物總覽新增
+  const [shopAddSheet,   setShopAddSheet]   = useState(null); // itinerary item id
+  const [shopAddText,    setShopAddText]    = useState('');
+  const shopAddRef = useRef(null);
+  useEffect(() => { if (shopAddSheet) setTimeout(() => shopAddRef.current?.focus(), 80); }, [shopAddSheet]);
   // 新增景點/交通 modal
   const [addItemModal,   setAddItemModal]   = useState(null); // {type:'place'|'transport', date}
   const [addItemData,    setAddItemData]    = useState({});
@@ -780,7 +785,7 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
 
   return (
     <div className="max-w-md mx-auto flex flex-col"
-      style={{background:'#FFFFFF', fontFamily:"'DM Sans','Noto Sans TC',sans-serif", height:'100dvh', overflow:'hidden', paddingTop:'env(safe-area-inset-top, 0px)'}}>
+      style={{background:'#FFFFFF', fontFamily:"'DM Sans','Noto Sans TC',sans-serif", height:'100dvh', overflow:'hidden', paddingTop:'env(safe-area-inset-top, 0px)', paddingBottom:'calc(56px + env(safe-area-inset-bottom, 0px))'}}>
 
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700;900&display=swap');
@@ -954,7 +959,7 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
             )}
 
             {/* ── 可捲動清單區 ── */}
-            <div className="scroll-area flex-1 pb-32">
+            <div className="scroll-area flex-1 pb-6">
 
               {/* 行前清單 */}
               {listTab==='pretrip' && (
@@ -1066,12 +1071,26 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                 <div className="px-4 py-4 space-y-4">
                   {(() => {
                     const shopItems = itinerary.filter(i=>i.shoppingList?.length>0);
-                    if (!shopItems.length) return <div className="text-center py-16 flex flex-col items-center gap-3" style={{color:C.muted}}><ShoppingBag size={44} opacity={0.2}/><p className="text-sm font-medium">目前沒有任何購物清單</p></div>;
+                    if (!shopItems.length) return (
+                      <div className="text-center py-16 flex flex-col items-center gap-3" style={{color:C.muted}}>
+                        <ShoppingBag size={44} opacity={0.2}/>
+                        <p className="text-sm font-medium">目前沒有任何購物清單</p>
+                        <p className="text-xs">在行程景點裡新增購物項目</p>
+                      </div>
+                    );
                     return shopItems.map(item=>(
                       <div key={item.id} className="rounded-2xl border overflow-hidden" style={{background:C.card, borderColor:C.border, boxShadow:C.cardShadow}}>
-                        <div className="flex items-center gap-1.5 px-4 py-3 border-b text-sm font-bold" style={{borderColor:C.border, color:C.ink}}>
-                          <MapPin size={13} style={{color:C.primary}}/>{item.title}
-                          <span className="ml-1 text-xs font-medium" style={{color:C.muted}}>({fmtDate(item.date)})</span>
+                        <div className="flex items-center gap-1.5 px-4 py-3 border-b" style={{borderColor:C.border}}>
+                          <MapPin size={13} style={{color:C.primary}}/>
+                          <span className="flex-1 text-sm font-bold" style={{color:C.ink}}>{item.title}</span>
+                          <span className="text-xs font-medium mr-2" style={{color:C.muted}}>({fmtDate(item.date)})</span>
+                          {!readOnly && (
+                            <button onClick={()=>setShopAddSheet(item.id)}
+                              className="flex items-center gap-1 text-[11px] font-black px-2 py-1 rounded-lg"
+                              style={{background:C.primaryLight, color:C.primary}}>
+                              <Plus size={11}/>新增
+                            </button>
+                          )}
                         </div>
                         <div className="px-4 py-3 space-y-3">
                           {item.shoppingList.map(s=>(
@@ -1080,6 +1099,12 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                                 {s.checked && <Check size={11} color="#fff"/>}
                               </button>
                               <span className="flex-1 text-sm font-medium" style={{color:s.checked?C.muted:C.ink, textDecoration:s.checked?'line-through':'none'}}>{s.text}</span>
+                              {!readOnly && (
+                                <button onClick={()=>setItinerary(list=>list.map(i=>i.id===item.id?{...i,shoppingList:i.shoppingList.filter(x=>x.id!==s.id)}:i))}
+                                  className="p-1 shrink-0" style={{color:s.checked?C.muted:C.danger}}>
+                                  <Trash2 size={13}/>
+                                </button>
+                              )}
                             </div>
                           ))}
                         </div>
@@ -1235,7 +1260,7 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
             )}
 
             {/* 可捲動行程區 */}
-            <div ref={itineraryScrollRef} className="scroll-area flex-1 pb-32">
+            <div ref={itineraryScrollRef} className="scroll-area flex-1 pb-6">
 
               {/* 無任何日期：放在 map 外面 */}
               {sortedDates.length === 0 && (
@@ -1673,7 +1698,7 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
             </div>
 
             {/* 可捲動費用區 */}
-            <div className="scroll-area flex-1 pb-32 px-4 space-y-4">
+            <div className="scroll-area flex-1 pb-6 px-4 space-y-4">
 
               {/* 分帳結果：每筆一行，橘色欠款人 → 藍色收款人，右側金額 */}
               {settlement.length > 0 && (
@@ -1803,8 +1828,20 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
               </button>
             </div>
           )}
-          {mode==='checklist' && (
+          {mode==='checklist' && listTab==='pretrip' && (
             <button onClick={()=>setSheetOpen(true)}
+              className="fab w-14 h-14 rounded-full flex items-center justify-center text-white shadow-xl"
+              style={{background:C.primary, boxShadow:'0 4px 24px rgba(72,116,158,0.45)'}}>
+              <Plus size={26}/>
+            </button>
+          )}
+          {mode==='checklist' && listTab==='shopping' && (
+            <button onClick={()=>{
+              const shopItems = itinerary.filter(i=>i.shoppingList?.length>=0 && i.type==='place');
+              if (shopItems.length === 1) { setShopAddSheet(shopItems[0].id); }
+              else if (shopItems.length === 0) { showToast('先在行程中新增景點'); }
+              else { setShopAddSheet('pick'); }
+            }}
               className="fab w-14 h-14 rounded-full flex items-center justify-center text-white shadow-xl"
               style={{background:C.primary, boxShadow:'0 4px 24px rgba(72,116,158,0.45)'}}>
               <Plus size={26}/>
@@ -2448,15 +2485,96 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
         </div>
       )}
 
+      {/* ══ 購物項目新增 SHEET ══ */}
+      {shopAddSheet && (
+        <div className="fixed inset-0 z-[70] flex flex-col justify-end"
+          style={{background:'rgba(0,0,0,0.35)'}}
+          onClick={e=>{ if(e.target===e.currentTarget){setShopAddSheet(null);setShopAddText('');} }}>
+          <div className="w-full rounded-t-3xl flex flex-col"
+            style={{background:C.card, maxWidth:'448px', margin:'0 auto', boxShadow:'0 -8px 40px rgba(0,0,0,0.15)'}}>
+            <div className="flex justify-center pt-3 pb-2">
+              <div className="w-10 h-1 rounded-full" style={{background:C.border}}/>
+            </div>
+
+            {/* 選景點（FAB 點擊且有多個景點時） */}
+            {shopAddSheet==='pick' ? (
+              <div className="px-5 pb-8">
+                <p className="text-sm font-black mb-3" style={{color:C.ink}}>要加入哪個景點的購物清單？</p>
+                <div className="space-y-2">
+                  {itinerary.filter(i=>i.type==='place').map(item=>(
+                    <button key={item.id} onClick={()=>setShopAddSheet(item.id)}
+                      className="w-full text-left px-4 py-3 rounded-2xl flex items-center gap-2"
+                      style={{background:C.primaryLight}}>
+                      <MapPin size={14} style={{color:C.primary}}/>
+                      <span className="flex-1 text-sm font-bold" style={{color:C.ink}}>{item.title}</span>
+                      <span className="text-xs" style={{color:C.muted}}>{fmtDate(item.date)}</span>
+                    </button>
+                  ))}
+                </div>
+                <button onClick={()=>{setShopAddSheet(null);}} className="mt-3 w-full py-2.5 rounded-2xl text-sm font-bold" style={{background:'#F4F7FA',color:C.muted}}>取消</button>
+              </div>
+            ) : (
+              /* 輸入購物項目 */
+              <div className="px-5 pb-8">
+                {(() => {
+                  const item = itinerary.find(i=>i.id===shopAddSheet);
+                  return item && <p className="text-xs font-bold mb-2" style={{color:C.primary}}>📍 {item.title}</p>;
+                })()}
+                <p className="text-sm font-black mb-3" style={{color:C.ink}}>新增購物項目</p>
+                <div className="flex gap-2">
+                  <input
+                    ref={shopAddRef}
+                    type="text"
+                    value={shopAddText}
+                    onChange={e=>setShopAddText(e.target.value)}
+                    onKeyDown={e=>{
+                      if (e.key==='Enter' && shopAddText.trim()) {
+                        setItinerary(list=>list.map(i=>i.id===shopAddSheet
+                          ? {...i, shoppingList:[...(i.shoppingList||[]),{id:crypto.randomUUID(),text:shopAddText.trim(),checked:false}]}
+                          : i));
+                        setShopAddText('');
+                      }
+                    }}
+                    placeholder="輸入購物項目…"
+                    className="flex-1 border rounded-2xl px-4 py-3 text-sm"
+                    style={{borderColor:C.border, color:C.ink}}/>
+                  <button
+                    onClick={()=>{
+                      if (!shopAddText.trim()) return;
+                      setItinerary(list=>list.map(i=>i.id===shopAddSheet
+                        ? {...i, shoppingList:[...(i.shoppingList||[]),{id:crypto.randomUUID(),text:shopAddText.trim(),checked:false}]}
+                        : i));
+                      setShopAddText('');
+                    }}
+                    className="fab px-4 rounded-2xl font-black text-white"
+                    style={{background:shopAddText.trim()?C.primary:C.muted, transition:'background 0.15s'}}>
+                    <Plus size={20}/>
+                  </button>
+                </div>
+                <button onClick={()=>{setShopAddSheet(null);setShopAddText('');}}
+                  className="mt-3 w-full py-2.5 rounded-2xl text-sm font-bold" style={{background:'#F4F7FA',color:C.muted}}>完成</button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* ══ EXPENSE MODALS ══ */}
       {addingExpenseFor && <ExpenseFormModal expenseItem={addingExpenseFor} users={users} rates={rates} baseCurrency={baseCurrency} categories={categories} onSave={saveExpense} onClose={()=>setAddingExpenseFor(null)}/>}
       {editingExpense && <ExpenseFormModal key={`edit-${editingExpense.id}`} initialData={editingExpense} expenseItem={itinerary.find(i=>i.id===editingExpense.itineraryId)||{title:'一般花費'}} users={users} rates={rates} baseCurrency={baseCurrency} categories={categories} onSave={saveExpense} onClose={()=>setEditingExpense(null)}/>}
       {ConfirmUI}
 
       {/* ══ BOTTOM NAV ══ */}
-      <nav className="shrink-0 z-40" style={{
+      <nav style={{
+        position:'fixed',
+        bottom:0,
+        left:'50%',
+        transform:'translateX(-50%)',
+        width:'100%',
+        maxWidth:'448px',
         background:C.primary,
         paddingBottom:'env(safe-area-inset-bottom, 0px)',
+        zIndex:40,
       }}>
         <div className="flex px-2 py-1">
           {[
