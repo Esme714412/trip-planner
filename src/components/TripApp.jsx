@@ -19,7 +19,7 @@ import { useConfirm } from './ConfirmModal';
 import {
   MapPin, Clock, Globe, ShoppingBag, Ticket, Navigation,
   Car, Plus, Edit2, Trash2, DollarSign,
-  ChevronDown, Check, X,
+  ChevronDown, ChevronUp, Check, X,
   ListTodo, Calendar, Settings,
   Star, Plane, Luggage, Camera as CameraIcon,
   ArrowLeft, ArrowRight, Share2,
@@ -203,8 +203,10 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
   const [savedSpotName,  setSavedSpotName]  = useState('');
   const [savedSpotNote,  setSavedSpotNote]  = useState('');
   const [savedSpotUrl,   setSavedSpotUrl]   = useState('');
+  const [savedSpotLoc,   setSavedSpotLoc]   = useState('');
   const [addingSpotToDate,setAddingSpotToDate]= useState(null);
   const [expandedSpotId, setExpandedSpotId] = useState(null);
+  const [pendingScrollToDate, setPendingScrollToDate] = useState(null);
   // 新增景點/交通 modal
   const [addItemModal,   setAddItemModal]   = useState(null); // {type:'place'|'transport', date}
   const [addItemData,    setAddItemData]    = useState({});
@@ -349,6 +351,16 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
   const tripDateRange = useMemo(() => getDatesInRange(tripStartDate, tripEndDate), [tripStartDate, tripEndDate]);
   const sortedDates   = useMemo(() => [...new Set(itinerary.map(i => i.date || '未定日期'))].sort(), [itinerary]);
   const currentDate   = sortedDates[selectedDay] || '';
+
+  // 收藏景點加入行程後，等 sortedDates 更新再跳到正確的天
+  useEffect(() => {
+    if (!pendingScrollToDate) return;
+    const idx = sortedDates.indexOf(pendingScrollToDate);
+    if (idx >= 0) {
+      setSelectedDay(idx);
+      setPendingScrollToDate(null);
+    }
+  }, [sortedDates, pendingScrollToDate]);
 
   // ──────────────────────────────────────────────────────────────────────
   const convertedExpenses = useMemo(() => expenses.map(exp => {
@@ -643,8 +655,8 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
     setEditingCheckId(null);
   };
 
-    const openDetailSheet = (item) => {
-    setDetailSheet(item);   // 點 ... 直接進入編輯
+  const openDetailSheet = (item) => {
+    setDetailSheet(item);
     setDetailData({...item});
     setEditExpandedId(null);
   };
@@ -754,6 +766,9 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
         .fab { transition: transform 0.15s ease, box-shadow 0.15s ease; }
         .fab:active { transform: scale(0.93); }
         .scroll-area { overflow-y: auto; -webkit-overflow-scrolling: touch; }
+        @supports (padding-bottom: env(safe-area-inset-bottom)) {
+          .safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
+        }
       `}</style>
 
       {/* Toast */}
@@ -894,7 +909,7 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
             )}
 
             {/* ── 可捲動清單區 ── */}
-            <div className="scroll-area flex-1 pb-28">
+            <div className="scroll-area flex-1 pb-32">
 
               {/* 行前清單 */}
               {listTab==='pretrip' && (
@@ -1035,12 +1050,13 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                   {!readOnly && (
                     <div className="px-4 pt-4 pb-2 space-y-2">
                       <input placeholder="景點名稱..." className="w-full border rounded-2xl px-4 py-3 text-sm font-bold" style={{borderColor:C.border,color:C.ink,background:C.card}} value={savedSpotName} onChange={e=>setSavedSpotName(e.target.value)}/>
+                      <input placeholder="地點（Google Maps 搜尋用，如：錦市場 京都）" className="w-full border rounded-2xl px-4 py-2.5 text-sm" style={{borderColor:C.border,color:C.ink,background:C.card}} value={savedSpotLoc} onChange={e=>setSavedSpotLoc(e.target.value)}/>
                       <textarea placeholder="備註（在哪看到的、有什麼特色…）" className="w-full border rounded-2xl px-4 py-2.5 text-sm resize-none" rows={2} style={{borderColor:C.border,color:C.ink,background:C.card}} value={savedSpotNote} onChange={e=>setSavedSpotNote(e.target.value)}/>
                       <input type="url" placeholder="來源連結 https://..." className="w-full border rounded-2xl px-4 py-2.5 text-sm" style={{borderColor:C.border,color:C.ink,background:C.card}} value={savedSpotUrl} onChange={e=>setSavedSpotUrl(e.target.value)}/>
                       <button onClick={()=>{
                         if(!savedSpotName.trim()) return;
-                        setSavedSpots(p=>[...p,{id:crypto.randomUUID(),name:savedSpotName.trim(),note:savedSpotNote.trim(),url:savedSpotUrl.trim(),createdAt:new Date().toISOString()}]);
-                        setSavedSpotName('');setSavedSpotNote('');setSavedSpotUrl('');
+                        setSavedSpots(p=>[...p,{id:crypto.randomUUID(),name:savedSpotName.trim(),location:savedSpotLoc.trim(),note:savedSpotNote.trim(),url:savedSpotUrl.trim(),createdAt:new Date().toISOString()}]);
+                        setSavedSpotName('');setSavedSpotLoc('');setSavedSpotNote('');setSavedSpotUrl('');
                         showToast('已收藏 ✓');
                       }} className="w-full py-3 rounded-2xl text-sm font-black text-white" style={{background:savedSpotName.trim()?C.primary:C.muted}}>
                         + 加入收藏
@@ -1060,7 +1076,7 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                         <button onClick={()=>setExpandedSpotId(expandedSpotId===spot.id?null:spot.id)} className="flex-1 text-left flex items-center gap-2 min-w-0">
                           <Star size={14} style={{color:C.warning, fill:C.warning, flexShrink:0}}/>
                           <span className="text-sm font-bold truncate" style={{color:C.ink}}>{spot.name}</span>
-                          {(spot.note||spot.url)&&<ChevronDown size={13} className={`transition-transform shrink-0 ${expandedSpotId===spot.id?'rotate-180':''}`} style={{color:C.muted}}/>}
+                          {(spot.location||spot.note||spot.url)&&<ChevronDown size={13} className={`transition-transform shrink-0 ${expandedSpotId===spot.id?'rotate-180':''}`} style={{color:C.muted}}/>}
                         </button>
                         <div className="flex items-center gap-1 shrink-0">
                           {!readOnly&&(
@@ -1073,8 +1089,15 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                           {!readOnly&&<button onClick={()=>setSavedSpots(p=>p.filter(s=>s.id!==spot.id))} className="p-1.5" style={{color:C.danger}}><Trash2 size={14}/></button>}
                         </div>
                       </div>
-                      {expandedSpotId===spot.id&&(spot.note||spot.url)&&(
+                      {expandedSpotId===spot.id&&(spot.location||spot.note||spot.url)&&(
                         <div className="px-4 pb-3 space-y-1">
+                          {spot.location&&(
+                            <a href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(spot.location)}`}
+                              target="_blank" rel="noreferrer"
+                              className="text-xs flex items-center gap-1 hover:underline" style={{color:C.primary}}>
+                              <MapPin size={11}/>{spot.location}
+                            </a>
+                          )}
                           {spot.note&&<p className="text-xs" style={{color:C.body}}>{spot.note}</p>}
                           {spot.url&&<a href={spot.url} target="_blank" rel="noreferrer" className="text-xs underline truncate block" style={{color:C.primary}}>{spot.url}</a>}
                         </div>
@@ -1086,9 +1109,10 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                             {(tripDateRange.length>0?tripDateRange:[...new Set(itinerary.map(i=>i.date))].filter(Boolean).sort()).map((d,i)=>{
                               const dt=new Date(d);
                               return <button key={d} onClick={()=>{
-                                setItinerary(p=>[...p,{id:crypto.randomUUID(),type:'place',date:d,time:'',title:spot.name,location:'',notes:spot.note||'',website:spot.url||'',transport:'',shoppingList:[],tickets:'',lastEditedBy:currentUserName||'',lastEditedAt:new Date().toISOString()}]);
-                                setSavedSpots(p=>p.filter(s=>s.id!==spot.id));
+                                setItinerary(p=>[...p,{id:crypto.randomUUID(),type:'place',date:d,time:'',title:spot.name,location:spot.location||spot.name||'',notes:spot.note||'',website:spot.url||'',shoppingList:[],tickets:'',hours:'',lastEditedBy:currentUserName||'',lastEditedAt:new Date().toISOString()}]);
                                 setAddingSpotToDate(null);
+                                setPendingScrollToDate(d);
+                                setMode('itinerary');
                                 showToast('✅ 已加入行程');
                               }} className="px-3 py-1.5 rounded-xl text-xs font-bold" style={{background:C.primaryLight,color:C.primary}}>Day{i+1} {dt.getMonth()+1}/{dt.getDate()}</button>;
                             })}
@@ -1166,7 +1190,7 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
             )}
 
             {/* 可捲動行程區 */}
-            <div ref={itineraryScrollRef} className="scroll-area flex-1 pb-28">
+            <div ref={itineraryScrollRef} className="scroll-area flex-1 pb-32">
 
               {/* 無任何日期：放在 map 外面 */}
               {sortedDates.length === 0 && (
@@ -1532,15 +1556,21 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                             <div key={shopItem.id}>
                               <p className="px-4 pt-3 pb-1 text-xs font-black" style={{color:C.muted}}>{shopItem.title}</p>
                               {shopItem.shoppingList.map((s, si, sa) => (
-                                <div key={s.id} className="flex items-center gap-3 px-4 py-2.5"
+                                <button key={s.id}
+                                  onClick={()=>toggleShop(shopItem.id, s.id)}
+                                  className="w-full flex items-center gap-3 px-4 py-2.5 text-left active:opacity-70"
                                   style={{borderBottom:(gi<ga.length-1||si<sa.length-1)?`1px solid ${C.border}`:'none'}}>
-                                  <div className="w-2 h-2 rounded-full shrink-0"
-                                    style={{background:s.checked?C.primary:'#D1D9E0'}}/>
-                                  <span className="flex-1 text-sm font-medium"
+                                  <div className="w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 transition-all"
+                                    style={s.checked
+                                      ? {background:C.primary, borderColor:C.primary}
+                                      : {borderColor:'#D1D9E0', background:'transparent'}}>
+                                    {s.checked && <Check size={11} color="#fff"/>}
+                                  </div>
+                                  <span className="flex-1 text-sm font-medium text-left"
                                     style={{color:s.checked?C.muted:C.ink, textDecoration:s.checked?'line-through':'none'}}>
                                     {s.text}
                                   </span>
-                                </div>
+                                </button>
                               ))}{/* end shoppingList.map */}
                             </div>
                           ))}{/* end shopItems.map */}
@@ -1598,7 +1628,7 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
             </div>
 
             {/* 可捲動費用區 */}
-            <div className="scroll-area flex-1 pb-28 px-4 space-y-4">
+            <div className="scroll-area flex-1 pb-32 px-4 space-y-4">
 
               {/* 分帳結果：每筆一行，橘色欠款人 → 藍色收款人，右側金額 */}
               {settlement.length > 0 && (
@@ -2332,7 +2362,7 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
 
               {/* 版本號 */}
               <div className="text-center pb-2">
-                <span className="text-xs font-mono" style={{color:C.muted}}>v0.7.6</span>
+                <span className="text-xs font-mono" style={{color:C.muted}}>v0.7.5</span>
               </div>
 
             </div>
@@ -2379,7 +2409,10 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
       {ConfirmUI}
 
       {/* ══ BOTTOM NAV ══ */}
-      <nav className="shrink-0 z-40" style={{background:C.primary}}>
+      <nav className="shrink-0 z-40" style={{
+        background:C.primary,
+        paddingBottom:'env(safe-area-inset-bottom, 0px)',
+      }}>
         <div className="flex px-2 py-1">
           {[
             {id:'checklist',icon:ListTodo,label:'行前清單'},
