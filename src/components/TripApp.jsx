@@ -187,6 +187,9 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
   const [toast,          setToast]          = useState('');
   const [saveStatus,     setSaveStatus]     = useState('saved'); // 'saving' | 'saved' | 'error' | 'offline'
   const [isOnline,       setIsOnline]       = useState(navigator.onLine);
+  const [isFinancePrivate, setIsFinancePrivate] = useState(false);
+  const [checklistDragId,  setChecklistDragId]  = useState(null);
+  const [newCheckType,     setNewCheckType]     = useState('item'); // 'item' | 'memo'
   // Settings modal
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isShareOpen,    setIsShareOpen]    = useState(false);
@@ -199,6 +202,8 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
   const [newAccomCheckOut,setNewAccomCheckOut] = useState('');
   const [newAccomName,   setNewAccomName]   = useState('');
   const [newAccomLoc,    setNewAccomLoc]    = useState('');
+  const [newAccomPrice,  setNewAccomPrice]  = useState('');
+  const [newAccomCur,    setNewAccomCur]    = useState('');
   const [editingAccomIdx,setEditingAccomIdx]= useState(null); // index being edited
   // 收藏景點 form
   const [savedSpotName,  setSavedSpotName]  = useState('');
@@ -207,6 +212,8 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
   const [savedSpotLoc,   setSavedSpotLoc]   = useState('');
   const [addingSpotToDate,setAddingSpotToDate]= useState(null);
   const [expandedSpotId, setExpandedSpotId] = useState(null);
+  const [editingSpotId,  setEditingSpotId]  = useState(null);
+  const [editingSpotData,setEditingSpotData]= useState({});
   const [pendingScrollToDate, setPendingScrollToDate] = useState(null);
   // 購物總覽新增
   const [shopAddSheet,   setShopAddSheet]   = useState(null); // itinerary item id
@@ -351,14 +358,22 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
     ).then(() => setSaveStatus('saved')).catch(() => setSaveStatus('error'));
   }, [debouncedPayload, uid, tripId, readOnly, isOnline]);
 
-  // onSnapshot — expenses 即時同步
+  // onSnapshot — 全欄位即時同步（3秒保護視窗避免覆蓋本地修改）
   useEffect(() => {
     if (!uid || !tripId) return;
     const unsub = onSnapshot(doc(db, 'users', uid, 'trips', tripId), (snap) => {
       if (!snap.exists()) return;
       if (Date.now() - lastLocalSaveTime.current < 3000) return;
       const d = snap.data();
-      if (d.expenses) setExpenses(d.expenses);
+      // 只更新遠端有、且本地沒有正在編輯的欄位
+      if (d.itinerary      !== undefined) setItinerary(d.itinerary);
+      if (d.checklist      !== undefined) setChecklist(d.checklist);
+      if (d.expenses       !== undefined) setExpenses(d.expenses);
+      if (d.accommodations !== undefined) setAccommodations(d.accommodations);
+      if (d.savedSpots     !== undefined) setSavedSpots(d.savedSpots);
+      if (d.users          !== undefined) setUsers(d.users);
+      if (d.rates          !== undefined) setRates(d.rates);
+      if (d.categories     !== undefined) setCategories(d.categories);
     });
     return () => unsub();
   }, [uid, tripId]);
@@ -368,7 +383,7 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
     if (!d) return '未定日期';
     const dt = new Date(d);
     if (isNaN(dt.getTime())) return d;
-    return `${dt.getMonth()+1}/${dt.getDate()}(${'日一二三四五六'[dt.getDay()]})`;
+    return `${dt.getMonth()+1}/${dt.getDate()}${'日一二三四五六'[dt.getDay()]}`;
   };
   const fmtShort = (d) => {
     if (!d) return '';
@@ -485,11 +500,17 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
     try {
       const snap = await getDocs(query(collection(db,'userProfiles'), where('email','==',newShareEmail.trim())));
       if (snap.empty) { setShareStatus('找不到此帳號'); return; }
+      const profile = snap.docs[0].data();
       const targetUid = snap.docs[0].id;
       const newEditors = newShareRole==='editor' ? [...new Set([...shareEditors, targetUid])] : shareEditors;
       const newViewers = newShareRole==='viewer' ? [...new Set([...shareViewers, targetUid])] : shareViewers;
       setShareEditors(newEditors); setShareViewers(newViewers);
       setShareEmailMap(prev => ({...prev, [targetUid]: newShareEmail.trim()}));
+      // 編輯者自動加入參與人員
+      if (newShareRole === 'editor') {
+        const memberName = profile.nickname || profile.displayName || newShareEmail.trim().split('@')[0];
+        setUsers(prev => prev.includes(memberName) ? prev : [...prev, memberName]);
+      }
       await updateDoc(doc(db,'users',uid,'trips',tripId),{editors:newEditors,viewers:newViewers});
       await setDoc(doc(db,'sharedTrips',tripId),{ownerUid:uid,tripId,editors:newEditors,viewers:newViewers});
       setShareStatus('✅ 已新增成員'); setNewShareEmail('');
@@ -598,6 +619,18 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
     showToast('✅ 已匯出 Markdown');
   };
   const toggleChecklist = (id) => setChecklist(list => list.map(i => i.id === id ? { ...i, checked: !i.checked } : i));
+  const moveChecklistItem = (id, dir) => {
+    setChecklist(list => {
+      const nonTicket = list.filter(i => i.type !== 'ticket');
+      const idx = nonTicket.findIndex(i => i.id === id);
+      if (idx < 0) return list;
+      const target = idx + dir;
+      if (target < 0 || target >= nonTicket.length) return list;
+      const arr = [...nonTicket];
+      [arr[idx], arr[target]] = [arr[target], arr[idx]];
+      return [...list.filter(i => i.type === 'ticket'), ...arr];
+    });
+  };
   const addChecklistItem = () => {
     if (!newChecklistItem.trim()) return;
     setChecklist(list => [...list, { id: crypto.randomUUID(), text: newChecklistItem.trim(), checked: false }]);
@@ -661,7 +694,12 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
   const sheetInputRef = React.useRef(null);
   const submitSheet = () => {
     if (!sheetInput.trim()) return;
-    setChecklist(l => [...l, {id: crypto.randomUUID(), text: sheetInput.trim(), checked: false}]);
+    setChecklist(l => [...l, {
+      id: crypto.randomUUID(),
+      text: sheetInput.trim(),
+      checked: false,
+      type: newCheckType === 'memo' ? 'memo' : undefined,
+    }]);
     setSheetInput('');
     setSheetOpen(false);
   };
@@ -712,9 +750,26 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
   };
   const deleteFromDetail = async () => {
     if (!await confirm('確定要刪除這個行程嗎？', '確認刪除')) return;
-    setItinerary(list => list.filter(i => i.id !== detailSheet.id));
+    const item = detailSheet;
+    // 若景點來自收藏（有 spotId），刪除後移回收藏
+    if (item.spotId) {
+      const alreadySaved = savedSpots.some(s => s.id === item.spotId);
+      if (!alreadySaved) {
+        setSavedSpots(prev => [...prev, {
+          id: item.spotId,
+          name: item.title,
+          location: item.location || '',
+          note: item.notes || '',
+          url: item.website || '',
+          createdAt: new Date().toISOString(),
+        }]);
+      }
+      showToast('已移回收藏景點');
+    } else {
+      showToast('已刪除');
+    }
+    setItinerary(list => list.filter(i => i.id !== item.id));
     setDetailSheet(null);
-    showToast('已刪除');
   };
 
     const handleMoveTarget = (targetId, targetDate) => {
@@ -912,7 +967,7 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                 className="flex items-center gap-1.5 text-xs font-medium active:opacity-60" style={{color:C.muted}}>
                 <Calendar size={12}/>
                 {tripStartDate&&tripEndDate
-                  ? `${fmtShort(tripStartDate)} – ${fmtShort(tripEndDate)} · ${users.length} 人同行`
+                  ? `${fmtShort(tripStartDate)} – ${fmtShort(tripEndDate)} · ${tripDateRange.length}天 · ${users.length} 人同行`
                   : !readOnly?'＋ 設定旅行日期':'未設定日期'}
               </button>
           }
@@ -1019,33 +1074,42 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                   })()}
 
                   {/* 一般清單未完成 */}
-                  {checklist.filter(i=>!i.checked&&i.type!=='ticket').map((item)=>(
+                  {checklist.filter(i=>!i.checked&&i.type!=='ticket').map((item, idx, arr)=>{
+                    const isMemo = item.type === 'memo';
+                    return (
                     <div key={item.id} style={{borderBottom:`1px solid ${C.border}`, overflow:'hidden', position:'relative'}}>
                       <div className="absolute inset-y-0 right-0 flex items-center px-4" style={{background:C.danger, width:'80px', justifyContent:'center'}}>
                         <Trash2 size={18} color="#fff"/>
                       </div>
-                      <div className="flex items-center gap-3 px-4 py-3.5 bg-white"
+                      <div className="flex items-center gap-3 px-4 py-3 bg-white"
                         style={{transform: swipeMap[item.id] ? 'translateX(-80px)' : 'translateX(0)', transition: 'transform 0.2s ease', position:'relative', zIndex:1}}
                         onPointerDown={e => { e._sx = e.clientX; }}
                         onPointerUp={e => { const dx = e.clientX - (e._sx||e.clientX); if (dx < -40) openSwipe(item.id); else if (dx > 10) closeSwipe(item.id); }}>
-                        <button onClick={()=>{ closeAllSwipe(); toggleChecklist(item.id); }}
-                          className="w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0"
-                          style={{borderColor:C.muted, background:'transparent'}}/>
+                        {isMemo ? (
+                          <span className="text-[10px] font-black px-1.5 py-0.5 rounded shrink-0" style={{background:'#F4F7FA',color:C.muted}}>備忘</span>
+                        ) : (
+                          <button onClick={()=>{ closeAllSwipe(); toggleChecklist(item.id); }}
+                            className="w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0"
+                            style={{borderColor:C.muted, background:'transparent'}}/>
+                        )}
                         {editingCheckId===item.id ? (
                           <input autoFocus value={editingCheckText} onChange={e=>setEditingCheckText(e.target.value)} onBlur={saveEditCheck} onKeyDown={e=>e.key==='Enter'&&saveEditCheck()} className="flex-1 text-sm font-medium border-b bg-transparent" style={{color:C.ink, borderColor:C.primary}}/>
                         ) : (
-                          <span className="flex-1 text-sm font-medium" style={{color:C.ink}} onClick={()=>closeAllSwipe()}>{item.text}</span>
+                          <span className="flex-1 text-sm font-medium" style={{color: isMemo ? C.muted : C.ink, fontStyle: isMemo ? 'italic' : 'normal'}} onClick={()=>closeAllSwipe()}>{item.text}</span>
                         )}
                         {!readOnly && (
-                          <div className="flex items-center gap-0.5 shrink-0">
+                          <div className="flex items-center gap-0 shrink-0">
+                            <button onClick={()=>moveChecklistItem(item.id,-1)} disabled={idx===0} className="p-1" style={{color:idx===0?C.border:C.muted}}><ChevronUp size={14}/></button>
+                            <button onClick={()=>moveChecklistItem(item.id,1)} disabled={idx===arr.length-1} className="p-1" style={{color:idx===arr.length-1?C.border:C.muted}}><ChevronDown size={14}/></button>
                             <button onClick={()=>{ closeAllSwipe(); startEditCheck(item); }} className="p-1.5" style={{color:C.muted}}><Edit2 size={13}/></button>
-                            <button onClick={()=>{ closeSwipe(item.id); deleteChecklistItem(item.id); }} className="p-1.5" style={{color:swipeMap[item.id]?C.danger:C.border}}><Trash2 size={13}/></button>
+                            <button onClick={()=>{ closeSwipe(item.id); deleteChecklistItem(item.id); }} className="p-1" style={{color:swipeMap[item.id]?C.danger:C.border}}><Trash2 size={13}/></button>
                           </div>
                         )}
                       </div>
                       {swipeMap[item.id] && <button className="absolute inset-y-0 right-0 flex items-center justify-center" style={{width:'80px', zIndex:2}} onClick={()=>{ closeSwipe(item.id); deleteChecklistItem(item.id); }}/>}
                     </div>
-                  ))}
+                    );
+                  })}
 
                   {/* 已完成一般清單 */}
                   {checklist.filter(i=>i.checked&&i.type!=='ticket').length>0 && (
@@ -1142,35 +1206,39 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                   )}
                   {savedSpots.map(spot=>(
                     <div key={spot.id} style={{borderBottom:`1px solid ${C.border}`}}>
-                      <div className="flex items-center gap-3 px-4 py-3.5">
-                        <button onClick={()=>setExpandedSpotId(expandedSpotId===spot.id?null:spot.id)} className="flex-1 text-left flex items-center gap-2 min-w-0">
-                          <Star size={14} style={{color:C.warning, fill:C.warning, flexShrink:0}}/>
-                          <span className="text-sm font-bold truncate" style={{color:C.ink}}>{spot.name}</span>
-                          {(spot.location||spot.note||spot.url)&&<ChevronDown size={13} className={`transition-transform shrink-0 ${expandedSpotId===spot.id?'rotate-180':''}`} style={{color:C.muted}}/>}
-                        </button>
-                        <div className="flex items-center gap-1 shrink-0">
-                          {!readOnly&&(
-                            <button onClick={()=>setAddingSpotToDate(addingSpotToDate===spot.id?null:spot.id)}
-                              className="text-[11px] font-black px-2.5 py-1.5 rounded-full"
-                              style={{background:addingSpotToDate===spot.id?C.primary:C.primaryLight, color:addingSpotToDate===spot.id?'#fff':C.primary}}>
-                              + 行程
-                            </button>
-                          )}
-                          {!readOnly&&<button onClick={()=>setSavedSpots(p=>p.filter(s=>s.id!==spot.id))} className="p-1.5" style={{color:C.danger}}><Trash2 size={14}/></button>}
+                      {editingSpotId===spot.id ? (
+                        <div className="px-4 py-3 space-y-2">
+                          <input className="w-full border rounded-xl px-3 py-2 text-sm font-bold" style={{borderColor:C.primary,color:C.ink}} value={editingSpotData.name||''} onChange={e=>setEditingSpotData(d=>({...d,name:e.target.value}))} placeholder="景點名稱"/>
+                          <input className="w-full border rounded-xl px-3 py-2 text-sm" style={{borderColor:C.border,color:C.ink}} value={editingSpotData.location||''} onChange={e=>setEditingSpotData(d=>({...d,location:e.target.value}))} placeholder="地點（Google Maps 搜尋用）"/>
+                          <textarea className="w-full border rounded-xl px-3 py-2 text-sm resize-none" rows={2} style={{borderColor:C.border,color:C.ink}} value={editingSpotData.note||''} onChange={e=>setEditingSpotData(d=>({...d,note:e.target.value}))} placeholder="備註"/>
+                          <input className="w-full border rounded-xl px-3 py-2 text-sm" style={{borderColor:C.border,color:C.ink}} value={editingSpotData.url||''} onChange={e=>setEditingSpotData(d=>({...d,url:e.target.value}))} placeholder="來源連結"/>
+                          <div className="flex gap-2">
+                            <button onClick={()=>{setSavedSpots(p=>p.map(s=>s.id===spot.id?{...s,...editingSpotData}:s));setEditingSpotId(null);}} className="flex-1 py-2 rounded-xl text-xs font-black text-white" style={{background:C.primary}}>儲存</button>
+                            <button onClick={()=>setEditingSpotId(null)} className="px-4 py-2 rounded-xl text-xs font-bold" style={{background:'#F4F7FA',color:C.muted}}>取消</button>
+                          </div>
                         </div>
-                      </div>
-                      {expandedSpotId===spot.id&&(spot.location||spot.note||spot.url)&&(
-                        <div className="px-4 pb-3 space-y-1">
-                          {spot.location&&(
-                            <a href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(spot.location)}`}
-                              target="_blank" rel="noreferrer"
-                              className="text-xs flex items-center gap-1 hover:underline" style={{color:C.primary}}>
-                              <MapPin size={11}/>{spot.location}
-                            </a>
-                          )}
-                          {spot.note&&<p className="text-xs" style={{color:C.body}}>{spot.note}</p>}
-                          {spot.url&&<a href={spot.url} target="_blank" rel="noreferrer" className="text-xs underline truncate block" style={{color:C.primary}}>{spot.url}</a>}
+                      ) : (
+                        <>
+                        <div className="flex items-center gap-3 px-4 py-3.5">
+                          <button onClick={()=>setExpandedSpotId(expandedSpotId===spot.id?null:spot.id)} className="flex-1 text-left flex items-center gap-2 min-w-0">
+                            <Star size={14} style={{color:C.warning, fill:C.warning, flexShrink:0}}/>
+                            <span className="text-sm font-bold truncate" style={{color:C.ink}}>{spot.name}</span>
+                            {(spot.location||spot.note||spot.url)&&<ChevronDown size={13} className={`transition-transform shrink-0 ${expandedSpotId===spot.id?'rotate-180':''}`} style={{color:C.muted}}/>}
+                          </button>
+                          <div className="flex items-center gap-1 shrink-0">
+                            {!readOnly&&<button onClick={()=>setAddingSpotToDate(addingSpotToDate===spot.id?null:spot.id)} className="text-[11px] font-black px-2.5 py-1.5 rounded-full" style={{background:addingSpotToDate===spot.id?C.primary:C.primaryLight,color:addingSpotToDate===spot.id?'#fff':C.primary}}>+ 行程</button>}
+                            {!readOnly&&<button onClick={()=>{setEditingSpotId(spot.id);setEditingSpotData({name:spot.name,location:spot.location||'',note:spot.note||'',url:spot.url||''});}} className="p-1.5" style={{color:C.muted}}><Edit2 size={13}/></button>}
+                            {!readOnly&&<button onClick={()=>setSavedSpots(p=>p.filter(s=>s.id!==spot.id))} className="p-1.5" style={{color:C.danger}}><Trash2 size={14}/></button>}
+                          </div>
                         </div>
+                        {expandedSpotId===spot.id&&(spot.location||spot.note||spot.url)&&(
+                          <div className="px-4 pb-3 space-y-1">
+                            {spot.location&&<a href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(spot.location)}`} target="_blank" rel="noreferrer" className="text-xs flex items-center gap-1 hover:underline" style={{color:C.primary}}><MapPin size={11}/>{spot.location}</a>}
+                            {spot.note&&<p className="text-xs" style={{color:C.body}}>{spot.note}</p>}
+                            {spot.url&&<a href={spot.url} target="_blank" rel="noreferrer" className="text-xs underline truncate block" style={{color:C.primary}}>{spot.url}</a>}
+                          </div>
+                        )}
+                        </>
                       )}
                       {addingSpotToDate===spot.id&&(
                         <div className="px-4 pb-3">
@@ -1179,7 +1247,7 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                             {(tripDateRange.length>0?tripDateRange:[...new Set(itinerary.map(i=>i.date))].filter(Boolean).sort()).map((d,i)=>{
                               const dt=new Date(d);
                               return <button key={d} onClick={()=>{
-                                setItinerary(p=>[...p,{id:crypto.randomUUID(),type:'place',date:d,time:'',title:spot.name,location:spot.location||spot.name||'',notes:spot.note||'',website:spot.url||'',shoppingList:[],tickets:'',hours:'',lastEditedBy:currentUserName||'',lastEditedAt:new Date().toISOString()}]);
+                                setItinerary(p=>[...p,{id:crypto.randomUUID(),type:'place',date:d,time:'',title:spot.name,location:spot.location||spot.name||'',notes:spot.note||'',website:spot.url||'',shoppingList:[],tickets:'',hours:'',spotId:spot.id,lastEditedBy:currentUserName||'',lastEditedAt:new Date().toISOString()}]);
                                 setAddingSpotToDate(null);
                                 setPendingScrollToDate(d);
                                 setMode('itinerary');
@@ -1297,22 +1365,19 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                         )}
                       </div>
                       {accom && (
-                        <div className="flex items-center gap-2 px-3 py-2 rounded-xl border ml-2"
+                        <button
+                          onClick={()=>{ const dest = encodeURIComponent(accom.location||accom.name); window.open(`https://www.google.com/maps/dir/?api=1&destination=${dest}`,'_blank'); }}
+                          className="flex items-center gap-2 px-3 py-2 rounded-xl border ml-2 active:opacity-70"
                           style={{background:C.primaryLight, borderColor:C.primary+'33', maxWidth:'52%', flexShrink:0}}>
                           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={C.primary} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                             <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
                             <polyline points="9 22 9 12 15 12 15 22"/>
                           </svg>
-                          <div className="min-w-0">
-                            <p className="text-[10px] font-bold" style={{color:C.primary, opacity:0.7}}>今晚住宿</p>
+                          <div className="min-w-0 text-left">
+                            <p className="text-[10px] font-bold" style={{color:C.primary, opacity:0.7}}>今晚住宿 →</p>
                             <p className="text-xs font-black truncate" style={{color:C.primary}}>{accom.name}</p>
                           </div>
-                          <button
-                            onClick={()=>{ const dest = encodeURIComponent(accom.location||accom.name); window.open(`https://www.google.com/maps/dir/?api=1&destination=${dest}`,'_blank'); }}
-                            style={{color:C.primary, opacity:0.6}}>
-                            <Navigation size={12}/>
-                          </button>
-                        </div>
+                        </button>
                       )}
                     </div>
 
@@ -1670,11 +1735,17 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
             {/* Summary hero：固定 */}
             <div className="shrink-0 mx-4 mt-4 mb-3 rounded-3xl p-4 text-white"
               style={{background:C.primary, boxShadow:'0 8px 32px rgba(72,116,158,0.25)'}}>
-              <p className="text-xs font-bold uppercase tracking-widest mb-1" style={{color:'rgba(255,255,255,0.55)'}}>
-                總花費
-              </p>
+              <div className="flex items-center justify-between mb-1">
+                <p className="text-xs font-bold uppercase tracking-widest" style={{color:'rgba(255,255,255,0.55)'}}>總花費</p>
+                <button onClick={()=>setIsFinancePrivate(v=>!v)} className="p-1 rounded-lg active:opacity-60" style={{color:'rgba(255,255,255,0.6)'}}>
+                  {isFinancePrivate
+                    ? <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+                    : <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                  }
+                </button>
+              </div>
               <p className="text-4xl font-black mb-4 tracking-tighter">
-                {baseCurrency} {Math.round(financeSummary.total).toLocaleString()}
+                {isFinancePrivate ? `${baseCurrency} ******` : `${baseCurrency} ${Math.round(financeSummary.total).toLocaleString()}`}
               </p>
               {/* 每人花費：顯示已付、應付、差額 */}
               <div className="grid grid-cols-2 gap-2">
@@ -1686,10 +1757,10 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                     <div key={u} className="rounded-2xl p-3" style={{background:'rgba(255,255,255,0.12)'}}>
                       <p className="text-xs font-medium truncate mb-1" style={{color:'rgba(255,255,255,0.55)'}}>{u}</p>
                       <p className="text-base font-black text-white leading-tight">
-                        {baseCurrency} {Math.round(s.consumed).toLocaleString()}
+                        {isFinancePrivate ? '***' : `${baseCurrency} ${Math.round(s.consumed).toLocaleString()}`}
                       </p>
                       <p className="text-[11px] mt-0.5" style={{color: bal>0?'#86efac':bal<0?'#fca5a5':'rgba(255,255,255,0.5)'}}>
-                        {bal>0?`+${bal.toLocaleString()} 待收`:bal<0?`${bal.toLocaleString()} 待付`:'已結清'}
+                        {isFinancePrivate ? '---' : (bal>0?`+${bal.toLocaleString()} 待收`:bal<0?`${bal.toLocaleString()} 待付`:'已結清')}
                       </p>
                     </div>
                   );
@@ -2070,17 +2141,23 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
             {/* ══ CHECKLIST SHEET ══ */}
       {sheetOpen && (
         <div className="fixed inset-0 z-[60] flex flex-col justify-end">
-          {/* 半透明遮罩 */}
           <div className="absolute inset-0" style={{background:'rgba(0,0,0,0.25)'}} onClick={()=>setSheetOpen(false)}/>
-          {/* Sheet 本體 */}
           <div className="relative rounded-t-3xl pb-10"
-            style={{background:C.card, boxShadow:'0 -8px 40px rgba(0,0,0,0.12)'}}>
-            {/* 拖曳把手 */}
+            style={{background:C.card, boxShadow:'0 -8px 40px rgba(0,0,0,0.12)', maxWidth:'448px', width:'100%', margin:'0 auto'}}>
             <div className="flex justify-center pt-3 pb-2">
               <div className="w-10 h-1 rounded-full" style={{background:C.border}}/>
             </div>
-            <div className="px-5 pb-4">
-              <p className="text-sm font-black mb-3" style={{color:C.ink}}>新增清單項目</p>
+            <div className="px-5 pb-4 space-y-3">
+              {/* 類型切換 */}
+              <div className="flex gap-1 p-1 rounded-xl" style={{background:'#F4F7FA'}}>
+                {[['item','✅ 待辦'],['memo','📝 備忘']].map(([t,l])=>(
+                  <button key={t} onClick={()=>setNewCheckType(t)}
+                    className="flex-1 py-2 rounded-lg text-xs font-black transition-all"
+                    style={newCheckType===t?{background:C.primary,color:'#fff'}:{color:C.muted}}>
+                    {l}
+                  </button>
+                ))}
+              </div>
               <div className="flex gap-2">
                 <input
                   ref={sheetInputRef}
@@ -2088,7 +2165,7 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                   value={sheetInput}
                   onChange={e=>setSheetInput(e.target.value)}
                   onKeyDown={e=>e.key==='Enter'&&submitSheet()}
-                  placeholder="輸入待準備事項…"
+                  placeholder={newCheckType==='memo'?'輸入備忘記錄…':'輸入待準備事項…'}
                   className="flex-1 border rounded-2xl px-4 py-3 text-sm font-medium"
                   style={{borderColor:C.border, color:C.ink}}/>
                 <button onClick={submitSheet}
@@ -2372,14 +2449,25 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                     <div key={i}>
                       {editingAccomIdx===i ? (
                         <div className="space-y-2 p-3 rounded-2xl" style={{background:'#F4F7FA',border:`1px solid ${C.primary}44`}}>
+                          {/* 日期：改用 input type=text 避免 date picker 爆出設定框 */}
                           <div className="grid grid-cols-2 gap-2">
-                            <div><p className="text-[10px] font-black uppercase mb-1" style={{color:C.muted}}>入住日</p>
-                              <input type="date" className="w-full border rounded-xl px-2 py-1.5 text-xs" style={{borderColor:C.border}} value={a.checkIn||''} onChange={e=>setAccommodations(p=>p.map((x,j)=>j===i?{...x,checkIn:e.target.value,date:e.target.value}:x))}/></div>
-                            <div><p className="text-[10px] font-black uppercase mb-1" style={{color:C.muted}}>退房日</p>
-                              <input type="date" className="w-full border rounded-xl px-2 py-1.5 text-xs" style={{borderColor:C.border}} value={a.checkOut||''} onChange={e=>setAccommodations(p=>p.map((x,j)=>j===i?{...x,checkOut:e.target.value}:x))}/></div>
+                            <div>
+                              <p className="text-[10px] font-black uppercase mb-1" style={{color:C.muted}}>入住日</p>
+                              <input type="date" className="w-full border rounded-xl px-2 py-1.5 text-xs" style={{borderColor:C.border,color:C.ink,maxWidth:'100%'}} value={a.checkIn||''} onChange={e=>setAccommodations(p=>p.map((x,j)=>j===i?{...x,checkIn:e.target.value,date:e.target.value}:x))}/>
+                            </div>
+                            <div>
+                              <p className="text-[10px] font-black uppercase mb-1" style={{color:C.muted}}>退房日</p>
+                              <input type="date" className="w-full border rounded-xl px-2 py-1.5 text-xs" style={{borderColor:C.border,color:C.ink,maxWidth:'100%'}} value={a.checkOut||''} onChange={e=>setAccommodations(p=>p.map((x,j)=>j===i?{...x,checkOut:e.target.value}:x))}/>
+                            </div>
                           </div>
                           <input placeholder="住宿名稱" className="w-full border rounded-xl px-3 py-1.5 text-sm" style={{borderColor:C.border,color:C.ink}} value={a.name||''} onChange={e=>setAccommodations(p=>p.map((x,j)=>j===i?{...x,name:e.target.value}:x))}/>
                           <input placeholder="地址（供導航）" className="w-full border rounded-xl px-3 py-1.5 text-sm" style={{borderColor:C.border,color:C.ink}} value={a.location||''} onChange={e=>setAccommodations(p=>p.map((x,j)=>j===i?{...x,location:e.target.value}:x))}/>
+                          <div className="flex gap-2">
+                            <input placeholder="金額（選填）" type="number" className="flex-1 border rounded-xl px-3 py-1.5 text-sm" style={{borderColor:C.border,color:C.ink}} value={a.price||''} onChange={e=>setAccommodations(p=>p.map((x,j)=>j===i?{...x,price:e.target.value}:x))}/>
+                            <select className="border rounded-xl px-2 py-1.5 text-sm" style={{borderColor:C.border,color:C.ink}} value={a.currency||baseCurrency} onChange={e=>setAccommodations(p=>p.map((x,j)=>j===i?{...x,currency:e.target.value}:x))}>
+                              {Object.keys(rates).map(cur=><option key={cur}>{cur}</option>)}
+                            </select>
+                          </div>
                           <div className="flex gap-2">
                             <button onClick={()=>setEditingAccomIdx(null)} className="flex-1 py-1.5 rounded-xl text-xs font-black text-white" style={{background:C.primary}}>完成</button>
                             <button onClick={()=>{setAccommodations(p=>p.filter((_,j)=>j!==i));setEditingAccomIdx(null);}} className="px-4 py-1.5 rounded-xl text-xs font-black" style={{background:C.dangerLight,color:C.danger}}>刪除</button>
@@ -2391,6 +2479,7 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                           <div className="flex-1 min-w-0">
                             <div className="text-xs font-bold" style={{color:C.primary}}>{a.checkIn}～{a.checkOut}</div>
                             <div className="text-sm font-bold truncate" style={{color:C.ink}}>{a.name}</div>
+                            {a.price&&<div className="text-xs" style={{color:C.muted}}>{a.currency||baseCurrency} {Number(a.price).toLocaleString()}</div>}
                             {a.location&&<div className="text-xs truncate" style={{color:C.muted}}>{a.location}</div>}
                           </div>
                           <button onClick={()=>setEditingAccomIdx(i)} className="p-1.5 rounded-lg" style={{background:'rgba(72,116,158,0.1)',color:C.primary}}><Edit2 size={13}/></button>
@@ -2404,16 +2493,50 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                 ):(
                   <div className="space-y-3 p-4 rounded-2xl" style={{background:'#F4F7FA',border:`1px solid ${C.border}`}}>
                     <div className="grid grid-cols-2 gap-2">
-                      <div><p className="text-[10px] font-black uppercase mb-1" style={{color:C.muted}}>入住日</p>
-                        <input type="date" className="w-full border rounded-xl px-2 py-2 text-sm" style={{borderColor:C.border}} value={newAccomCheckIn} onChange={e=>setNewAccomCheckIn(e.target.value)}/></div>
-                      <div><p className="text-[10px] font-black uppercase mb-1" style={{color:C.muted}}>退房日</p>
-                        <input type="date" className="w-full border rounded-xl px-2 py-2 text-sm" style={{borderColor:C.border}} value={newAccomCheckOut} onChange={e=>setNewAccomCheckOut(e.target.value)}/></div>
+                      <div>
+                        <p className="text-[10px] font-black uppercase mb-1" style={{color:C.muted}}>入住日</p>
+                        <input type="date" className="w-full border rounded-xl px-2 py-2 text-xs" style={{borderColor:C.border,color:C.ink,maxWidth:'100%'}} value={newAccomCheckIn} onChange={e=>setNewAccomCheckIn(e.target.value)}/>
+                      </div>
+                      <div>
+                        <p className="text-[10px] font-black uppercase mb-1" style={{color:C.muted}}>退房日</p>
+                        <input type="date" className="w-full border rounded-xl px-2 py-2 text-xs" style={{borderColor:C.border,color:C.ink,maxWidth:'100%'}} value={newAccomCheckOut} onChange={e=>setNewAccomCheckOut(e.target.value)}/>
+                      </div>
                     </div>
                     <input placeholder="住宿名稱" className="w-full border rounded-xl px-3 py-2 text-sm" style={{borderColor:C.border,color:C.ink}} value={newAccomName} onChange={e=>setNewAccomName(e.target.value)}/>
                     <input placeholder="地址（供導航）" className="w-full border rounded-xl px-3 py-2 text-sm" style={{borderColor:C.border,color:C.ink}} value={newAccomLoc} onChange={e=>setNewAccomLoc(e.target.value)}/>
                     <div className="flex gap-2">
-                      <button onClick={()=>{setShowAddAccom(false);setNewAccomName('');setNewAccomLoc('');setNewAccomCheckIn('');setNewAccomCheckOut('');}} className="flex-1 py-2 rounded-xl text-sm font-bold" style={{background:'#F4F7FA',color:C.muted}}>取消</button>
-                      <button onClick={()=>{if(!newAccomName.trim())return;setAccommodations(p=>[...p,{checkIn:newAccomCheckIn,checkOut:newAccomCheckOut,name:newAccomName.trim(),location:newAccomLoc.trim(),date:newAccomCheckIn}].sort((a,b)=>a.checkIn.localeCompare(b.checkIn)));setShowAddAccom(false);setNewAccomName('');setNewAccomLoc('');setNewAccomCheckIn('');setNewAccomCheckOut('');}} className="flex-1 py-2 rounded-xl text-sm font-black text-white" style={{background:C.primary}}>新增</button>
+                      <input placeholder="金額（選填）" type="number" className="flex-1 border rounded-xl px-3 py-2 text-sm" style={{borderColor:C.border,color:C.ink}} value={newAccomPrice} onChange={e=>setNewAccomPrice(e.target.value)}/>
+                      <select className="border rounded-xl px-2 py-2 text-sm" style={{borderColor:C.border,color:C.ink}} value={newAccomCur||baseCurrency} onChange={e=>setNewAccomCur(e.target.value)}>
+                        {Object.keys(rates).map(cur=><option key={cur}>{cur}</option>)}
+                      </select>
+                    </div>
+                    <div className="flex gap-2">
+                      <button onClick={()=>{setShowAddAccom(false);setNewAccomName('');setNewAccomLoc('');setNewAccomCheckIn('');setNewAccomCheckOut('');setNewAccomPrice('');setNewAccomCur('');}} className="flex-1 py-2 rounded-xl text-sm font-bold" style={{background:'#F4F7FA',color:C.muted}}>取消</button>
+                      <button onClick={()=>{
+                        if(!newAccomName.trim()) return;
+                        const cur = newAccomCur||baseCurrency;
+                        const price = Number(newAccomPrice)||0;
+                        const newAccom = {checkIn:newAccomCheckIn,checkOut:newAccomCheckOut,name:newAccomName.trim(),location:newAccomLoc.trim(),date:newAccomCheckIn,price:newAccomPrice,currency:cur};
+                        setAccommodations(p=>[...p,newAccom].sort((a,b)=>a.checkIn.localeCompare(b.checkIn)));
+                        // 有填金額 → 自動建立住宿花費
+                        if (price>0) {
+                          const nights = newAccomCheckIn&&newAccomCheckOut ? Math.max(1,Math.round((new Date(newAccomCheckOut)-new Date(newAccomCheckIn))/(1000*60*60*24))) : 1;
+                          setExpenses(prev=>[...prev,{
+                            id: crypto.randomUUID(),
+                            description: `${newAccomName.trim()} 住宿費`,
+                            amount: price,
+                            currency: cur,
+                            category: '住宿',
+                            paidBy: users[0]||'',
+                            splitMode: 'equal',
+                            splitAmong: [...users],
+                            items: [{name:`${newAccomName.trim()}（${nights}晚）`,amount:price}],
+                            createdAt: new Date().toISOString(),
+                          }]);
+                          showToast(`✅ 已自動建立住宿花費 ${cur} ${price.toLocaleString()}`);
+                        }
+                        setShowAddAccom(false);setNewAccomName('');setNewAccomLoc('');setNewAccomCheckIn('');setNewAccomCheckOut('');setNewAccomPrice('');setNewAccomCur('');
+                      }} className="flex-1 py-2 rounded-xl text-sm font-black text-white" style={{background:C.primary}}>新增</button>
                     </div>
                   </div>
                 )}
@@ -2444,7 +2567,7 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
 
               {/* 版本號 */}
               <div className="text-center pb-2">
-                <span className="text-xs font-mono" style={{color:C.muted}}>v0.8.0</span>
+                <span className="text-xs font-mono" style={{color:C.muted}}>v0.8.1</span>
               </div>
 
             </div>
