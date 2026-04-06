@@ -7,6 +7,7 @@ export function parseMarkdown(mdText, tripStartDate) {
   const checklistItems = [];
   const accommodationItems = [];
   const savedSpotItems = [];
+  const shoppingItems = [];
 
   // 頂層 meta（# 標題、- 日期：、- 幣別：）
   let tripName = '';
@@ -60,6 +61,7 @@ export function parseMarkdown(mdText, tripStartDate) {
 
     // ── section 切換 ──
     if (trimmed.startsWith('## 必帶物品')) { section = 'musthave';      pushCurrentItem(); pushCurrentAccom(); pushCurrentSpot(); continue; }
+    if (trimmed.startsWith('## 購物清單')) { section = 'shopping';      pushCurrentItem(); pushCurrentAccom(); pushCurrentSpot(); continue; }
     if (trimmed.startsWith('## 行程'))     { section = 'itinerary';     pushCurrentItem(); pushCurrentAccom(); pushCurrentSpot(); continue; }
     if (trimmed.startsWith('## 住宿'))     { section = 'accommodation'; pushCurrentItem(); pushCurrentAccom(); pushCurrentSpot(); continue; }
     if (trimmed.startsWith('## 收藏景點')) { section = 'spots';         pushCurrentItem(); pushCurrentAccom(); pushCurrentSpot(); continue; }
@@ -115,6 +117,12 @@ export function parseMarkdown(mdText, tripStartDate) {
         continue;
       }
 
+      // 購物清單
+      if (section === 'shopping') {
+        shoppingItems.push({ id: crypto.randomUUID(), text: v || k, checked: false });
+        continue;
+      }
+
       // 行程欄位
       if (section === 'itinerary' && currentItem) {
         if (currentItem.type === 'transport') {
@@ -161,10 +169,13 @@ export function parseMarkdown(mdText, tripStartDate) {
       }
     }
 
-    // 必帶物品（純 - 列表）
-    if (section === 'musthave' && trimmed.startsWith('- ')) {
+    // 必帶物品 / 購物清單（純 - 列表）
+    if ((section === 'musthave' || section === 'shopping') && trimmed.startsWith('- ')) {
       const text = trimmed.replace(/^-\s+/, '').trim();
-      if (text) checklistItems.push({ id: crypto.randomUUID(), text, checked: false });
+      if (text) {
+        if (section === 'musthave') checklistItems.push({ id: crypto.randomUUID(), text, checked: false });
+        else shoppingItems.push({ id: crypto.randomUUID(), text, checked: false });
+      }
     }
   }
 
@@ -181,5 +192,6 @@ export function parseMarkdown(mdText, tripStartDate) {
     checklistItems,
     accommodationItems,
     savedSpotItems,
+    shoppingItems,
   };
 }

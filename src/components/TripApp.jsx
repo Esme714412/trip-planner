@@ -172,6 +172,7 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
   const [expenses,       setExpenses]       = useState(initialData.expenses      || []);
   const [accommodations, setAccommodations] = useState(initialData.accommodations|| []);
   const [savedSpots,     setSavedSpots]     = useState(initialData.savedSpots    || []);
+  const [freeShoppingList, setFreeShoppingList] = useState(initialData.freeShoppingList || []);
 
   // ── UI state ────────────────────────────────────────────────────────────────
   const [mode,           setMode]           = useState('itinerary');
@@ -195,6 +196,12 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
   const [showTodoSection,   setShowTodoSection]   = useState(true);
   const [spotModalOpen,     setSpotModalOpen]     = useState(false);
   const [spotModalData,     setSpotModalData]     = useState({name:'',location:'',note:'',url:''});
+  const [sheetMode,         setSheetMode]         = useState('text'); // 'text' | 'markdown'
+  const [sheetMdText,       setSheetMdText]       = useState('');
+  const [showFreeShopSection, setShowFreeShopSection] = useState(true);
+  const [editingFreeShopId,   setEditingFreeShopId]   = useState(null);
+  const [editingFreeShopText, setEditingFreeShopText] = useState('');
+  const [bindingShopId,       setBindingShopId]       = useState(null);
   // Settings modal
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isShareOpen,    setIsShareOpen]    = useState(false);
@@ -221,6 +228,17 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
   const [shopAddText,    setShopAddText]    = useState('');
   const shopAddRef = useRef(null);
   useEffect(() => { if (shopAddSheet) setTimeout(() => shopAddRef.current?.focus(), 80); }, [shopAddSheet]);
+  // 未綁定採買新增
+  const [freeShopAddOpen, setFreeShopAddOpen] = useState(false);
+  const [freeShopAddText, setFreeShopAddText] = useState('');
+  const freeShopAddRef = useRef(null);
+  useEffect(() => { if (freeShopAddOpen) setTimeout(() => freeShopAddRef.current?.focus(), 80); }, [freeShopAddOpen]);
+  const submitFreeShopAdd = () => {
+    if (!freeShopAddText.trim()) return;
+    setFreeShoppingList(l => [...l, { id: crypto.randomUUID(), text: freeShopAddText.trim(), checked: false }]);
+    setFreeShopAddText('');
+    setFreeShopAddOpen(false);
+  };
   // 新增景點/交通 modal
   const [addItemModal,   setAddItemModal]   = useState(null); // {type:'place'|'transport', date}
   const [addItemData,    setAddItemData]    = useState({});
@@ -322,9 +340,9 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
     name: tripName, iconIndex: tripIconIndex,
     tripStartDate, tripEndDate,
     users, rates, baseCurrency, categories,
-    checklist, itinerary, expenses, accommodations, savedSpots,
+    checklist, itinerary, expenses, accommodations, savedSpots, freeShoppingList,
     editors: shareEditors, viewers: shareViewers,
-  }), [tripName, tripIconIndex, tripStartDate, tripEndDate, users, rates, baseCurrency, categories, checklist, itinerary, expenses, accommodations, savedSpots, shareEditors, shareViewers]);
+  }), [tripName, tripIconIndex, tripStartDate, tripEndDate, users, rates, baseCurrency, categories, checklist, itinerary, expenses, accommodations, savedSpots, freeShoppingList, shareEditors, shareViewers]);
 
   const debouncedPayload = useDebounce(payload, 1200);
   const isFirstSave = useRef(true);
@@ -343,7 +361,7 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
     // 只寫有改動的欄位（merge mode）
     const prev = prevSavedPayload.current || {};
     const KEYS = ['name','iconIndex','tripStartDate','tripEndDate','users','rates','baseCurrency',
-      'categories','checklist','itinerary','expenses','accommodations','savedSpots','editors','viewers'];
+      'categories','checklist','itinerary','expenses','accommodations','savedSpots','freeShoppingList','editors','viewers'];
     const changes = {};
     for (const k of KEYS) {
       if (JSON.stringify(prev[k]) !== JSON.stringify(debouncedPayload[k])) {
@@ -372,7 +390,8 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
       if (d.checklist      !== undefined) setChecklist(d.checklist);
       if (d.expenses       !== undefined) setExpenses(d.expenses);
       if (d.accommodations !== undefined) setAccommodations(d.accommodations);
-      if (d.savedSpots     !== undefined) setSavedSpots(d.savedSpots);
+      if (d.savedSpots        !== undefined) setSavedSpots(d.savedSpots);
+      if (d.freeShoppingList  !== undefined) setFreeShoppingList(d.freeShoppingList);
       if (d.users          !== undefined) setUsers(d.users);
       if (d.rates          !== undefined) setRates(d.rates);
       if (d.categories     !== undefined) setCategories(d.categories);
@@ -706,6 +725,16 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
     setSheetInput('');
     setSheetOpen(false);
   };
+  const submitSheetMd = () => {
+    if (!sheetMdText.trim()) return;
+    const { checklistItems, shoppingItems, savedSpotItems } = parseMarkdown(sheetMdText, tripStartDate);
+    if (checklistItems.length)  setChecklist(prev => [...prev, ...checklistItems]);
+    if (shoppingItems.length)   setFreeShoppingList(prev => [...prev, ...shoppingItems]);
+    if (savedSpotItems.length)  setSavedSpots(prev => [...prev, ...savedSpotItems]);
+    showToast(`✅ 匯入 ${checklistItems.length} 筆待辦、${shoppingItems.length} 筆採買、${savedSpotItems.length} 個收藏景點`);
+    setSheetMdText('');
+    setSheetOpen(false);
+  };
   React.useEffect(() => { if (sheetOpen) setTimeout(() => sheetInputRef.current?.focus(), 80); }, [sheetOpen]);
 
     const [swipeMap, setSwipeMap] = useState({});
@@ -856,7 +885,8 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
       if (remote.itinerary)  setItinerary( prev => mergeById(prev, remote.itinerary,  lastSaved?.itinerary));
       if (remote.checklist)  setChecklist( prev => mergeById(prev, remote.checklist,  lastSaved?.checklist));
       if (remote.expenses)   setExpenses(  prev => mergeById(prev, remote.expenses,   lastSaved?.expenses));
-      if (remote.savedSpots) setSavedSpots(prev => mergeById(prev, remote.savedSpots, lastSaved?.savedSpots));
+      if (remote.savedSpots)       setSavedSpots(      prev => mergeById(prev, remote.savedSpots,       lastSaved?.savedSpots));
+      if (remote.freeShoppingList) setFreeShoppingList(prev => mergeById(prev, remote.freeShoppingList, lastSaved?.freeShoppingList));
     }).catch(() => {});
   }, [isOnline, uid, tripId]);
 
@@ -1276,15 +1306,61 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
               {/* 購物總覽 */}
               {listTab==='shopping' && (
                 <div className="px-4 py-4 space-y-4">
+                  {/* 未綁定採買 */}
+                  {(freeShoppingList.length > 0 || !readOnly) && (
+                    <div className="rounded-2xl border overflow-hidden" style={{background:C.card, borderColor:C.border, boxShadow:C.cardShadow}}>
+                      <button onClick={()=>setShowFreeShopSection(v=>!v)} className="w-full flex items-center gap-2 px-4 py-3 border-b" style={{borderColor:C.border}}>
+                        <ShoppingBag size={13} style={{color:C.warning}}/>
+                        <span className="flex-1 text-sm font-bold text-left" style={{color:C.ink}}>未綁定採買</span>
+                        {freeShoppingList.length > 0 && <span className="text-[10px] font-black px-1.5 py-0.5 rounded-full mr-1" style={{background:'#FFF3E0',color:C.warning}}>{freeShoppingList.length}</span>}
+                        <ChevronDown size={13} className={`transition-transform ${showFreeShopSection?'rotate-180':''}`} style={{color:C.muted}}/>
+                      </button>
+                      {showFreeShopSection && (
+                        <div className="px-4 py-3 space-y-3">
+                          {freeShoppingList.length === 0 && (
+                            <p className="text-xs text-center py-2" style={{color:C.muted}}>尚無項目，用下方 + 新增</p>
+                          )}
+                          {freeShoppingList.map(item=>(
+                            <div key={item.id} className="flex items-center gap-3">
+                              <button onClick={()=>setFreeShoppingList(l=>l.map(i=>i.id===item.id?{...i,checked:!i.checked}:i))}
+                                className="w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 transition-all"
+                                style={item.checked?{background:C.primary,borderColor:C.primary}:{borderColor:C.muted}}>
+                                {item.checked && <Check size={11} color="#fff"/>}
+                              </button>
+                              {editingFreeShopId===item.id ? (
+                                <input autoFocus value={editingFreeShopText}
+                                  onChange={e=>setEditingFreeShopText(e.target.value)}
+                                  onBlur={()=>{ if(editingFreeShopText.trim()) setFreeShoppingList(l=>l.map(i=>i.id===item.id?{...i,text:editingFreeShopText.trim()}:i)); setEditingFreeShopId(null); }}
+                                  onKeyDown={e=>{ if(e.key==='Enter'){ if(editingFreeShopText.trim()) setFreeShoppingList(l=>l.map(i=>i.id===item.id?{...i,text:editingFreeShopText.trim()}:i)); setEditingFreeShopId(null); }}}
+                                  className="flex-1 text-sm font-medium border-b bg-transparent"
+                                  style={{color:C.ink, borderColor:C.primary}}/>
+                              ) : (
+                                <span className="flex-1 text-sm font-medium" style={{color:item.checked?C.muted:C.ink, textDecoration:item.checked?'line-through':'none'}}>{item.text}</span>
+                              )}
+                              {!readOnly && editingFreeShopId!==item.id && (
+                                <div className="flex items-center gap-1 shrink-0">
+                                  <button onClick={()=>{ setEditingFreeShopId(item.id); setEditingFreeShopText(item.text); }} className="p-1" style={{color:C.muted}}><Edit2 size={13}/></button>
+                                  <button onClick={()=>setBindingShopId(item.id)} className="p-1 text-[11px] font-black rounded-lg px-2" style={{background:C.primaryLight,color:C.primary}}>綁定景點</button>
+                                  <button onClick={()=>setFreeShoppingList(l=>l.filter(i=>i.id!==item.id))} className="p-1" style={{color:C.danger}}><Trash2 size={13}/></button>
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  {/* 已綁定景點的採買 */}
                   {(() => {
                     const shopItems = itinerary.filter(i=>i.shoppingList?.length>0);
-                    if (!shopItems.length) return (
+                    if (!shopItems.length && !freeShoppingList.length) return (
                       <div className="text-center py-16 flex flex-col items-center gap-3" style={{color:C.muted}}>
                         <ShoppingBag size={44} opacity={0.2}/>
                         <p className="text-sm font-medium">目前沒有任何購物清單</p>
-                        <p className="text-xs">在行程景點裡新增購物項目</p>
+                        <p className="text-xs">點 + 新增未綁定採買，或在行程景點新增</p>
                       </div>
                     );
+                    if (!shopItems.length) return null;
                     return shopItems.map(item=>(
                       <div key={item.id} className="rounded-2xl border overflow-hidden" style={{background:C.card, borderColor:C.border, boxShadow:C.cardShadow}}>
                         <div className="flex items-center gap-1.5 px-4 py-3 border-b" style={{borderColor:C.border}}>
@@ -2062,13 +2138,8 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
               <Plus size={26}/>
             </button>
           )}
-          {mode==='checklist' && listTab==='shopping' && (
-            <button onClick={()=>{
-              const shopItems = itinerary.filter(i=>i.shoppingList?.length>=0 && i.type==='place');
-              if (shopItems.length === 1) { setShopAddSheet(shopItems[0].id); }
-              else if (shopItems.length === 0) { showToast('先在行程中新增景點'); }
-              else { setShopAddSheet('pick'); }
-            }}
+          {mode==='checklist' && listTab==='shopping' && !readOnly && (
+            <button onClick={()=>setFreeShopAddOpen(true)}
               className="fab w-14 h-14 rounded-full flex items-center justify-center text-white shadow-xl"
               style={{background:C.primary, boxShadow:'0 4px 24px rgba(72,116,158,0.45)'}}>
               <Plus size={26}/>
@@ -2304,29 +2375,58 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
             {/* ══ CHECKLIST SHEET ══ */}
       {sheetOpen && (
         <div className="fixed inset-0 z-[60] flex flex-col justify-end">
-          <div className="absolute inset-0" style={{background:'rgba(0,0,0,0.25)'}} onClick={()=>setSheetOpen(false)}/>
+          <div className="absolute inset-0" style={{background:'rgba(0,0,0,0.25)'}} onClick={()=>{ setSheetOpen(false); setSheetMode('text'); }}/>
           <div className="relative rounded-t-3xl pb-10"
             style={{background:C.card, boxShadow:'0 -8px 40px rgba(0,0,0,0.12)', maxWidth:'448px', width:'100%', margin:'0 auto'}}>
             <div className="flex justify-center pt-3 pb-2">
               <div className="w-10 h-1 rounded-full" style={{background:C.border}}/>
             </div>
             <div className="px-5 pb-4 space-y-3">
-              <div className="flex gap-2">
-                <input
-                  ref={sheetInputRef}
-                  type="text"
-                  value={sheetInput}
-                  onChange={e=>setSheetInput(e.target.value)}
-                  onKeyDown={e=>e.key==='Enter'&&submitSheet()}
-                  placeholder="輸入待準備事項…"
-                  className="flex-1 border rounded-2xl px-4 py-3 text-sm font-medium"
-                  style={{borderColor:C.border, color:C.ink}}/>
-                <button onClick={submitSheet}
-                  className="fab px-5 rounded-2xl font-black text-white"
-                  style={{background:sheetInput.trim()?C.primary:C.muted, transition:'background 0.15s'}}>
-                  <Plus size={20}/>
-                </button>
+              {/* 模式切換 */}
+              <div className="flex gap-1 p-1 rounded-xl" style={{background:'#F4F7FA'}}>
+                {[['text','單筆新增'],['markdown','Markdown 匯入']].map(([m,l])=>(
+                  <button key={m} onClick={()=>setSheetMode(m)}
+                    className="flex-1 py-2 rounded-lg text-xs font-black transition-all"
+                    style={sheetMode===m?{background:C.primary,color:'#fff'}:{color:C.muted}}>
+                    {l}
+                  </button>
+                ))}
               </div>
+              {sheetMode==='text' ? (
+                <div className="flex gap-2">
+                  <input
+                    ref={sheetInputRef}
+                    type="text"
+                    value={sheetInput}
+                    onChange={e=>setSheetInput(e.target.value)}
+                    onKeyDown={e=>e.key==='Enter'&&submitSheet()}
+                    placeholder="輸入待準備事項…"
+                    className="flex-1 border rounded-2xl px-4 py-3 text-sm font-medium"
+                    style={{borderColor:C.border, color:C.ink}}/>
+                  <button onClick={submitSheet}
+                    className="fab px-5 rounded-2xl font-black text-white"
+                    style={{background:sheetInput.trim()?C.primary:C.muted, transition:'background 0.15s'}}>
+                    <Plus size={20}/>
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <p className="text-[11px] font-bold" style={{color:C.muted}}>解析 ## 必帶物品、## 購物清單、## 收藏景點</p>
+                  <textarea
+                    autoFocus
+                    value={sheetMdText}
+                    onChange={e=>setSheetMdText(e.target.value)}
+                    placeholder="貼上 Markdown 內容…"
+                    rows={6}
+                    className="w-full border rounded-2xl px-4 py-3 text-sm font-medium resize-none"
+                    style={{borderColor:C.border, color:C.ink}}/>
+                  <button onClick={submitSheetMd}
+                    className="w-full py-3 rounded-2xl text-sm font-black text-white"
+                    style={{background:sheetMdText.trim()?C.primary:C.muted, transition:'background 0.15s'}}>
+                    匯入
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -2781,7 +2881,7 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
 
               {/* 版本號 */}
               <div className="text-center pb-2">
-                <span className="text-xs font-mono" style={{color:C.muted}}>v0.8.2</span>
+                <span className="text-xs font-mono" style={{color:C.muted}}>v0.8.3</span>
               </div>
 
             </div>
@@ -2892,6 +2992,72 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                   className="mt-3 w-full py-2.5 rounded-2xl text-sm font-bold" style={{background:'#F4F7FA',color:C.muted}}>完成</button>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* ══ FREE SHOP ADD SHEET ══ */}
+      {freeShopAddOpen && (
+        <div className="fixed inset-0 z-[60] flex flex-col justify-end">
+          <div className="absolute inset-0" style={{background:'rgba(0,0,0,0.25)'}} onClick={()=>{setFreeShopAddOpen(false);setFreeShopAddText('');}}/>
+          <div className="relative rounded-t-3xl pb-10" style={{background:C.card, boxShadow:'0 -8px 40px rgba(0,0,0,0.12)', maxWidth:'448px', width:'100%', margin:'0 auto'}}>
+            <div className="flex justify-center pt-3 pb-2"><div className="w-10 h-1 rounded-full" style={{background:C.border}}/></div>
+            <div className="px-5 pb-4 space-y-3">
+              <p className="text-sm font-black" style={{color:C.ink}}>新增未綁定採買</p>
+              <div className="flex gap-2">
+                <input ref={freeShopAddRef} type="text" value={freeShopAddText} onChange={e=>setFreeShopAddText(e.target.value)}
+                  onKeyDown={e=>e.key==='Enter'&&submitFreeShopAdd()}
+                  placeholder="輸入採買項目…"
+                  className="flex-1 border rounded-2xl px-4 py-3 text-sm font-medium"
+                  style={{borderColor:C.border, color:C.ink}}/>
+                <button onClick={submitFreeShopAdd}
+                  className="fab px-5 rounded-2xl font-black text-white"
+                  style={{background:freeShopAddText.trim()?C.primary:C.muted, transition:'background 0.15s'}}>
+                  <Plus size={20}/>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ══ BIND SHOP ITEM TO SPOT SHEET ══ */}
+      {bindingShopId && (
+        <div className="fixed inset-0 z-[60] flex flex-col justify-end">
+          <div className="absolute inset-0" style={{background:'rgba(0,0,0,0.25)'}} onClick={()=>setBindingShopId(null)}/>
+          <div className="relative rounded-t-3xl pb-10" style={{background:C.card, boxShadow:'0 -8px 40px rgba(0,0,0,0.12)', maxWidth:'448px', width:'100%', margin:'0 auto'}}>
+            <div className="flex justify-center pt-3 pb-2"><div className="w-10 h-1 rounded-full" style={{background:C.border}}/></div>
+            <div className="px-5 pb-4 space-y-3">
+              <p className="text-sm font-black" style={{color:C.ink}}>選擇要綁定的景點</p>
+              {(() => {
+                const places = itinerary.filter(i=>i.type==='place');
+                if (!places.length) return <p className="text-xs text-center py-4" style={{color:C.muted}}>尚無行程景點</p>;
+                return (
+                  <div className="space-y-2 overflow-y-auto" style={{maxHeight:'50vh'}}>
+                    {places.map(p=>(
+                      <button key={p.id} onClick={()=>{
+                        const item = freeShoppingList.find(i=>i.id===bindingShopId);
+                        if (!item) return;
+                        setItinerary(list=>list.map(i=>i.id===p.id
+                          ? {...i, shoppingList:[...(i.shoppingList||[]),{id:item.id,text:item.text,checked:item.checked}]}
+                          : i));
+                        setFreeShoppingList(l=>l.filter(i=>i.id!==bindingShopId));
+                        setBindingShopId(null);
+                      }}
+                        className="w-full flex items-center gap-3 px-4 py-3 rounded-2xl border text-left"
+                        style={{borderColor:C.border, background:C.card}}>
+                        <MapPin size={14} style={{color:C.primary}}/>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-bold truncate" style={{color:C.ink}}>{p.title}</p>
+                          <p className="text-xs" style={{color:C.muted}}>{fmtDate(p.date)}{p.location?` · ${p.location}`:''}</p>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                );
+              })()}
+              <button onClick={()=>setBindingShopId(null)} className="w-full py-2.5 rounded-2xl text-sm font-bold" style={{background:'#F4F7FA',color:C.muted}}>取消</button>
+            </div>
           </div>
         </div>
       )}
