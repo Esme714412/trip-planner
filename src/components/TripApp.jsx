@@ -195,7 +195,6 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
   const [showTodoSection,   setShowTodoSection]   = useState(true);
   const [spotModalOpen,     setSpotModalOpen]     = useState(false);
   const [spotModalData,     setSpotModalData]     = useState({name:'',location:'',note:'',url:''});
-  const [newCheckType,     setNewCheckType]     = useState('item'); // 'item' | 'memo'
   // Settings modal
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isShareOpen,    setIsShareOpen]    = useState(false);
@@ -702,7 +701,7 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
       id: crypto.randomUUID(),
       text: sheetInput.trim(),
       checked: false,
-      type: newCheckType === 'memo' ? 'memo' : undefined,
+      type: undefined,
     }]);
     setSheetInput('');
     setSheetOpen(false);
@@ -2312,16 +2311,6 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
               <div className="w-10 h-1 rounded-full" style={{background:C.border}}/>
             </div>
             <div className="px-5 pb-4 space-y-3">
-              {/* 類型切換 */}
-              <div className="flex gap-1 p-1 rounded-xl" style={{background:'#F4F7FA'}}>
-                {[['item','✅ 待辦'],['memo','📝 備忘']].map(([t,l])=>(
-                  <button key={t} onClick={()=>setNewCheckType(t)}
-                    className="flex-1 py-2 rounded-lg text-xs font-black transition-all"
-                    style={newCheckType===t?{background:C.primary,color:'#fff'}:{color:C.muted}}>
-                    {l}
-                  </button>
-                ))}
-              </div>
               <div className="flex gap-2">
                 <input
                   ref={sheetInputRef}
@@ -2329,7 +2318,7 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                   value={sheetInput}
                   onChange={e=>setSheetInput(e.target.value)}
                   onKeyDown={e=>e.key==='Enter'&&submitSheet()}
-                  placeholder={newCheckType==='memo'?'輸入備忘記錄…':'輸入待準備事項…'}
+                  placeholder="輸入待準備事項…"
                   className="flex-1 border rounded-2xl px-4 py-3 text-sm font-medium"
                   style={{borderColor:C.border, color:C.ink}}/>
                 <button onClick={submitSheet}

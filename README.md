@@ -89,6 +89,7 @@ GitHub Actions 部署時需在 repo Settings → Secrets and variables → Actio
 
 ## 收藏景點
 - 名稱：錦市場
+  地點：京都市中京區
   備註：京都著名食材市場，適合早上逛
   連結：https://example.com
 ```

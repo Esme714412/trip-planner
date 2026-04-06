@@ -151,9 +151,10 @@ export function parseMarkdown(mdText, tripStartDate) {
 
       // 收藏景點
       if (section === 'spots') {
-        if (k === '名稱') { pushCurrentSpot(); currentSpot = { name: v, note:'', url:'' }; }
+        if (k === '名稱') { pushCurrentSpot(); currentSpot = { name: v, location:'', note:'', url:'' }; }
         else if (currentSpot) {
-          if (k === '備註') currentSpot.note = v;
+          if (k === '地點') currentSpot.location = v;
+          else if (k === '備註') currentSpot.note = v;
           else if (k === '連結') currentSpot.url = v;
         }
         continue;
