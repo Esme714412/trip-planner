@@ -187,8 +187,14 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
   const [toast,          setToast]          = useState('');
   const [saveStatus,     setSaveStatus]     = useState('saved'); // 'saving' | 'saved' | 'error' | 'offline'
   const [isOnline,       setIsOnline]       = useState(navigator.onLine);
-  const [isFinancePrivate, setIsFinancePrivate] = useState(false);
-  const [checklistDragId,  setChecklistDragId]  = useState(null);
+  const [isFinancePrivate,  setIsFinancePrivate]  = useState(true);
+  const [checklistDragId,   setChecklistDragId]   = useState(null);
+  const [movingChecklistId, setMovingChecklistId] = useState(null);
+  const [showTicketSection, setShowTicketSection] = useState(true);
+  const [showMemoSection,   setShowMemoSection]   = useState(true);
+  const [showTodoSection,   setShowTodoSection]   = useState(true);
+  const [spotModalOpen,     setSpotModalOpen]     = useState(false);
+  const [spotModalData,     setSpotModalData]     = useState({name:'',location:'',note:'',url:''});
   const [newCheckType,     setNewCheckType]     = useState('item'); // 'item' | 'memo'
   // Settings modal
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -205,11 +211,7 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
   const [newAccomPrice,  setNewAccomPrice]  = useState('');
   const [newAccomCur,    setNewAccomCur]    = useState('');
   const [editingAccomIdx,setEditingAccomIdx]= useState(null); // index being edited
-  // 收藏景點 form
-  const [savedSpotName,  setSavedSpotName]  = useState('');
-  const [savedSpotNote,  setSavedSpotNote]  = useState('');
-  const [savedSpotUrl,   setSavedSpotUrl]   = useState('');
-  const [savedSpotLoc,   setSavedSpotLoc]   = useState('');
+  // 收藏景點 form（inline states 已移至 spotModalData）
   const [addingSpotToDate,setAddingSpotToDate]= useState(null);
   const [expandedSpotId, setExpandedSpotId] = useState(null);
   const [editingSpotId,  setEditingSpotId]  = useState(null);
@@ -306,6 +308,7 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
   const [movingItemId,   setMovingItemId]   = useState(null);
   // 各天 section 的 ref，用於快速捲動
   const dayRefs = React.useRef({});
+  const wasOffline = React.useRef(false);
   const itineraryScrollRef = React.useRef(null);
   // 卡片詳情 / 編輯 Sheet
   const [detailSheet,    setDetailSheet]    = useState(null);
@@ -619,17 +622,18 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
     showToast('✅ 已匯出 Markdown');
   };
   const toggleChecklist = (id) => setChecklist(list => list.map(i => i.id === id ? { ...i, checked: !i.checked } : i));
-  const moveChecklistItem = (id, dir) => {
+  const moveChecklistItemBefore = (fromId, toId) => {
     setChecklist(list => {
       const nonTicket = list.filter(i => i.type !== 'ticket');
-      const idx = nonTicket.findIndex(i => i.id === id);
-      if (idx < 0) return list;
-      const target = idx + dir;
-      if (target < 0 || target >= nonTicket.length) return list;
+      const fromIdx = nonTicket.findIndex(i => i.id === fromId);
+      if (fromIdx < 0) return list;
       const arr = [...nonTicket];
-      [arr[idx], arr[target]] = [arr[target], arr[idx]];
+      const [moved] = arr.splice(fromIdx, 1);
+      const toIdx = arr.findIndex(i => i.id === toId);
+      arr.splice(toIdx < 0 ? arr.length : toIdx, 0, moved);
       return [...list.filter(i => i.type === 'ticket'), ...arr];
     });
+    setMovingChecklistId(null);
   };
   const addChecklistItem = () => {
     if (!newChecklistItem.trim()) return;
@@ -728,6 +732,18 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
   const saveDetailSheet = () => {
     const prev = detailSheet;
     setItinerary(list => list.map(i => i.id === prev.id ? cleanForFirestore({...detailData}) : i));
+    // 若此行程項目來自收藏景點，同步更新 savedSpot（景點名稱、地點、備註、連結）
+    if (detailData.type === 'place' && detailData.spotId) {
+      setSavedSpots(spots => spots.map(s => s.id === detailData.spotId
+        ? { ...s,
+            name:     detailData.title    || s.name,
+            location: detailData.location !== undefined ? detailData.location : s.location,
+            note:     detailData.notes    !== undefined ? detailData.notes    : s.note,
+            url:      detailData.website  !== undefined ? detailData.website  : s.url,
+          }
+        : s
+      ));
+    }
     // needTicket 變成 true 且行前清單尚無此條目 → 自動新增
     if (detailData.type === 'transport' && detailData.needTicket && !prev.needTicket) {
       const label = [detailData.transportMode, detailData.from && detailData.to ? `${detailData.from}→${detailData.to}` : ''].filter(Boolean).join(' ');
@@ -822,6 +838,28 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
     window.addEventListener('offline', off);
     return () => { window.removeEventListener('online', on); window.removeEventListener('offline', off); };
   }, []);
+
+  // 重新上線時合併遠端新增的項目（避免 A 裝置的離線寫入覆蓋掉其他裝置在連線期間的新增）
+  useEffect(() => {
+    if (!isOnline) { wasOffline.current = true; return; }
+    if (!wasOffline.current || !uid || !tripId) return;
+    wasOffline.current = false;
+    getDoc(doc(db, 'users', uid, 'trips', tripId)).then(snap => {
+      if (!snap.exists()) return;
+      const remote = snap.data();
+      const lastSaved = prevSavedPayload.current;
+      const mergeById = (localArr, remoteArr, lastArr) => {
+        const lastIds  = new Set((lastArr  || []).map(i => i.id).filter(Boolean));
+        const localIds = new Set((localArr || []).map(i => i.id).filter(Boolean));
+        const remoteNew = (remoteArr || []).filter(i => i.id && !lastIds.has(i.id) && !localIds.has(i.id));
+        return [...(localArr || []), ...remoteNew];
+      };
+      if (remote.itinerary)  setItinerary( prev => mergeById(prev, remote.itinerary,  lastSaved?.itinerary));
+      if (remote.checklist)  setChecklist( prev => mergeById(prev, remote.checklist,  lastSaved?.checklist));
+      if (remote.expenses)   setExpenses(  prev => mergeById(prev, remote.expenses,   lastSaved?.expenses));
+      if (remote.savedSpots) setSavedSpots(prev => mergeById(prev, remote.savedSpots, lastSaved?.savedSpots));
+    }).catch(() => {});
+  }, [isOnline, uid, tripId]);
 
     const todayStr = new Date().toISOString().split('T')[0];
   const dayLabel = (d) => {
@@ -1019,7 +1057,16 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
               {/* 行前清單 */}
               {listTab==='pretrip' && (
                 <div>
-                  {/* ── 購票提醒區塊（item 4）── */}
+                  {/* 移動提示橫條 */}
+                  {movingChecklistId && (
+                    <div className="flex items-center justify-between px-4 py-3 sticky top-0 z-10"
+                      style={{background:C.warning}}>
+                      <p className="text-sm font-black text-white">點選要插入到哪個項目前面</p>
+                      <button onClick={()=>setMovingChecklistId(null)} className="text-white opacity-80 active:opacity-60"><X size={18}/></button>
+                    </div>
+                  )}
+
+                  {/* ── 購票提醒區塊（可折疊）── */}
                   {(() => {
                     const today = new Date(); today.setHours(0,0,0,0);
                     const ticketItems = checklist.filter(i=>i.type==='ticket');
@@ -1036,36 +1083,41 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                     };
                     return (
                       <div>
-                        <div className="flex items-center gap-2 px-4 pt-3 pb-2">
+                        <button onClick={()=>setShowTicketSection(v=>!v)} className="w-full flex items-center gap-2 px-4 pt-3 pb-2">
                           <Ticket size={13} style={{color:C.warning}}/>
-                          <span className="text-[11px] font-black uppercase tracking-widest" style={{color:C.warning}}>購票提醒</span>
+                          <span className="text-[11px] font-black uppercase tracking-widest flex-1 text-left" style={{color:C.warning}}>購票提醒</span>
                           {pendingTickets.length>0 && <span className="text-[10px] font-black px-1.5 py-0.5 rounded-full" style={{background:C.warningLight,color:C.warning}}>{pendingTickets.length}</span>}
-                        </div>
-                        {pendingTickets.map(item=>(
-                          <div key={item.id} className="flex items-center gap-3 px-4 py-3.5" style={{borderBottom:`1px solid ${C.border}`, background:C.warningLight}}>
-                            <button onClick={()=>toggleChecklist(item.id)} className="w-6 h-6 rounded-full border-2 flex items-center justify-center shrink-0" style={{borderColor:C.warning,background:'transparent'}}>
-                              <Ticket size={11} style={{color:C.warning}}/>
-                            </button>
-                            <span className="flex-1 text-sm font-medium" style={{color:C.ink}}>{item.text}</span>
-                            <div className="flex items-center gap-1.5 shrink-0">
-                              {DeadlineBadge(item)}
-                              {!readOnly&&<button onClick={()=>deleteChecklistItem(item.id)} className="p-1" style={{color:C.danger}}><Trash2 size={13}/></button>}
-                            </div>
-                          </div>
-                        ))}
-                        {doneTickets.length>0 && (
+                          <ChevronDown size={13} className={`transition-transform ${showTicketSection?'rotate-180':''}`} style={{color:C.warning}}/>
+                        </button>
+                        {showTicketSection && (
                           <>
-                            <button onClick={()=>setShowDoneTickets(v=>!v)} className="flex items-center gap-2 px-4 py-2.5 w-full text-xs font-bold" style={{color:C.muted,borderBottom:`1px solid ${C.border}`}}>
-                              <ChevronDown size={13} className={`transition-transform ${showDoneTickets?'rotate-180':''}`}/>已完成購票 ({doneTickets.length})
-                            </button>
-                            {showDoneTickets && doneTickets.map(item=>(
-                              <div key={item.id} className="flex items-center gap-3 px-4 py-3.5" style={{borderBottom:`1px solid ${C.border}`}}>
-                                <button onClick={()=>toggleChecklist(item.id)} className="w-6 h-6 rounded-full flex items-center justify-center shrink-0" style={{background:'#4ade80'}}>
-                                  <Check size={12} color="#fff"/>
+                            {pendingTickets.map(item=>(
+                              <div key={item.id} className="flex items-center gap-3 px-4 py-3.5" style={{borderBottom:`1px solid ${C.border}`, background:C.warningLight}}>
+                                <button onClick={()=>toggleChecklist(item.id)} className="w-6 h-6 rounded-full border-2 flex items-center justify-center shrink-0" style={{borderColor:C.warning,background:'transparent'}}>
+                                  <Ticket size={11} style={{color:C.warning}}/>
                                 </button>
-                                <span className="flex-1 text-sm line-through" style={{color:C.muted}}>{item.text}</span>
+                                <span className="flex-1 text-sm font-medium" style={{color:C.ink}}>{item.text}</span>
+                                <div className="flex items-center gap-1.5 shrink-0">
+                                  {DeadlineBadge(item)}
+                                  {!readOnly&&<button onClick={()=>deleteChecklistItem(item.id)} className="p-1" style={{color:C.danger}}><Trash2 size={13}/></button>}
+                                </div>
                               </div>
                             ))}
+                            {doneTickets.length>0 && (
+                              <>
+                                <button onClick={()=>setShowDoneTickets(v=>!v)} className="flex items-center gap-2 px-4 py-2.5 w-full text-xs font-bold" style={{color:C.muted,borderBottom:`1px solid ${C.border}`}}>
+                                  <ChevronDown size={13} className={`transition-transform ${showDoneTickets?'rotate-180':''}`}/>已完成購票 ({doneTickets.length})
+                                </button>
+                                {showDoneTickets && doneTickets.map(item=>(
+                                  <div key={item.id} className="flex items-center gap-3 px-4 py-3.5" style={{borderBottom:`1px solid ${C.border}`}}>
+                                    <button onClick={()=>toggleChecklist(item.id)} className="w-6 h-6 rounded-full flex items-center justify-center shrink-0" style={{background:'#4ade80'}}>
+                                      <Check size={12} color="#fff"/>
+                                    </button>
+                                    <span className="flex-1 text-sm line-through" style={{color:C.muted}}>{item.text}</span>
+                                  </div>
+                                ))}
+                              </>
+                            )}
                           </>
                         )}
                         <div className="h-px" style={{background:C.border}}/>
@@ -1073,43 +1125,135 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                     );
                   })()}
 
-                  {/* 一般清單未完成 */}
-                  {checklist.filter(i=>!i.checked&&i.type!=='ticket').map((item, idx, arr)=>{
-                    const isMemo = item.type === 'memo';
-                    return (
-                    <div key={item.id} style={{borderBottom:`1px solid ${C.border}`, overflow:'hidden', position:'relative'}}>
-                      <div className="absolute inset-y-0 right-0 flex items-center px-4" style={{background:C.danger, width:'80px', justifyContent:'center'}}>
-                        <Trash2 size={18} color="#fff"/>
-                      </div>
-                      <div className="flex items-center gap-3 px-4 py-3 bg-white"
-                        style={{transform: swipeMap[item.id] ? 'translateX(-80px)' : 'translateX(0)', transition: 'transform 0.2s ease', position:'relative', zIndex:1}}
-                        onPointerDown={e => { e._sx = e.clientX; }}
-                        onPointerUp={e => { const dx = e.clientX - (e._sx||e.clientX); if (dx < -40) openSwipe(item.id); else if (dx > 10) closeSwipe(item.id); }}>
-                        {isMemo ? (
-                          <span className="text-[10px] font-black px-1.5 py-0.5 rounded shrink-0" style={{background:'#F4F7FA',color:C.muted}}>備忘</span>
-                        ) : (
+                  {/* ── 待辦 section（可折疊）── */}
+                  {(()=>{
+                    const todoItems = checklist.filter(i=>!i.checked && i.type!=='ticket' && i.type!=='memo');
+                    if (!todoItems.length) return null;
+                    const renderItem = (item, idx, arr) => (
+                      <div key={item.id} style={{borderBottom:`1px solid ${C.border}`, overflow:'hidden', position:'relative'}}>
+                        <div className="absolute inset-y-0 right-0 flex items-center px-4" style={{background:C.danger, width:'80px', justifyContent:'center'}}>
+                          <Trash2 size={18} color="#fff"/>
+                        </div>
+                        <div className="flex items-center gap-3 px-4 py-3 bg-white"
+                          style={{
+                            transform: swipeMap[item.id] ? 'translateX(-80px)' : 'translateX(0)',
+                            transition: 'transform 0.2s ease', position:'relative', zIndex:1,
+                            background: movingChecklistId===item.id ? C.primaryLight : '#fff',
+                          }}
+                          onPointerDown={e => { e._sx = e.clientX; }}
+                          onPointerUp={e => { const dx = e.clientX - (e._sx||e.clientX); if (dx < -40) openSwipe(item.id); else if (dx > 10) closeSwipe(item.id); }}>
+                          {/* 移動 handle */}
+                          {!readOnly && (
+                            <button
+                              onClick={()=>{
+                                if (movingChecklistId === item.id) setMovingChecklistId(null);
+                                else if (movingChecklistId) moveChecklistItemBefore(movingChecklistId, item.id);
+                                else setMovingChecklistId(item.id);
+                              }}
+                              className="p-1 rounded shrink-0"
+                              style={{color: movingChecklistId===item.id ? C.warning : movingChecklistId ? C.primary : C.muted,
+                                background: movingChecklistId===item.id ? C.warningLight : 'transparent'}}>
+                              {movingChecklistId===item.id
+                                ? <X size={13}/>
+                                : movingChecklistId
+                                  ? <ArrowRight size={13}/>
+                                  : <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                                      <line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/>
+                                      <line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/>
+                                      <line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>
+                                    </svg>
+                              }
+                            </button>
+                          )}
                           <button onClick={()=>{ closeAllSwipe(); toggleChecklist(item.id); }}
                             className="w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0"
                             style={{borderColor:C.muted, background:'transparent'}}/>
-                        )}
-                        {editingCheckId===item.id ? (
-                          <input autoFocus value={editingCheckText} onChange={e=>setEditingCheckText(e.target.value)} onBlur={saveEditCheck} onKeyDown={e=>e.key==='Enter'&&saveEditCheck()} className="flex-1 text-sm font-medium border-b bg-transparent" style={{color:C.ink, borderColor:C.primary}}/>
-                        ) : (
-                          <span className="flex-1 text-sm font-medium" style={{color: isMemo ? C.muted : C.ink, fontStyle: isMemo ? 'italic' : 'normal'}} onClick={()=>closeAllSwipe()}>{item.text}</span>
-                        )}
-                        {!readOnly && (
-                          <div className="flex items-center gap-0 shrink-0">
-                            <button onClick={()=>moveChecklistItem(item.id,-1)} disabled={idx===0} className="p-1" style={{color:idx===0?C.border:C.muted}}><ChevronUp size={14}/></button>
-                            <button onClick={()=>moveChecklistItem(item.id,1)} disabled={idx===arr.length-1} className="p-1" style={{color:idx===arr.length-1?C.border:C.muted}}><ChevronDown size={14}/></button>
-                            <button onClick={()=>{ closeAllSwipe(); startEditCheck(item); }} className="p-1.5" style={{color:C.muted}}><Edit2 size={13}/></button>
-                            <button onClick={()=>{ closeSwipe(item.id); deleteChecklistItem(item.id); }} className="p-1" style={{color:swipeMap[item.id]?C.danger:C.border}}><Trash2 size={13}/></button>
-                          </div>
-                        )}
+                          {editingCheckId===item.id ? (
+                            <input autoFocus value={editingCheckText} onChange={e=>setEditingCheckText(e.target.value)} onBlur={saveEditCheck} onKeyDown={e=>e.key==='Enter'&&saveEditCheck()} className="flex-1 text-sm font-medium border-b bg-transparent" style={{color:C.ink, borderColor:C.primary}}/>
+                          ) : (
+                            <span className="flex-1 text-sm font-medium" style={{color:C.ink}} onClick={()=>closeAllSwipe()}>{item.text}</span>
+                          )}
+                          {!readOnly && (
+                            <div className="flex items-center gap-0 shrink-0">
+                              <button onClick={()=>{ closeAllSwipe(); startEditCheck(item); }} className="p-1.5" style={{color:C.muted}}><Edit2 size={13}/></button>
+                              <button onClick={()=>{ closeSwipe(item.id); deleteChecklistItem(item.id); }} className="p-1" style={{color:swipeMap[item.id]?C.danger:C.border}}><Trash2 size={13}/></button>
+                            </div>
+                          )}
+                        </div>
+                        {swipeMap[item.id] && <button className="absolute inset-y-0 right-0 flex items-center justify-center" style={{width:'80px', zIndex:2}} onClick={()=>{ closeSwipe(item.id); deleteChecklistItem(item.id); }}/>}
                       </div>
-                      {swipeMap[item.id] && <button className="absolute inset-y-0 right-0 flex items-center justify-center" style={{width:'80px', zIndex:2}} onClick={()=>{ closeSwipe(item.id); deleteChecklistItem(item.id); }}/>}
-                    </div>
                     );
-                  })}
+                    return (
+                      <div>
+                        <button onClick={()=>setShowTodoSection(v=>!v)} className="w-full flex items-center gap-2 px-4 pt-3 pb-2">
+                          <ListTodo size={13} style={{color:C.primary}}/>
+                          <span className="text-[11px] font-black uppercase tracking-widest flex-1 text-left" style={{color:C.primary}}>待辦</span>
+                          <span className="text-[10px] font-black px-1.5 py-0.5 rounded-full" style={{background:C.primaryLight,color:C.primary}}>{todoItems.length}</span>
+                          <ChevronDown size={13} className={`transition-transform ${showTodoSection?'rotate-180':''}`} style={{color:C.muted}}/>
+                        </button>
+                        {showTodoSection && todoItems.map((item, idx, arr) => renderItem(item, idx, arr))}
+                        <div className="h-px" style={{background:C.border}}/>
+                      </div>
+                    );
+                  })()}
+
+                  {/* ── 備忘 section（可折疊）── */}
+                  {(()=>{
+                    const memoItems = checklist.filter(i=>!i.checked && i.type==='memo');
+                    if (!memoItems.length) return null;
+                    return (
+                      <div>
+                        <button onClick={()=>setShowMemoSection(v=>!v)} className="w-full flex items-center gap-2 px-4 pt-3 pb-2">
+                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={C.muted} strokeWidth="2.5" strokeLinecap="round"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                          <span className="text-[11px] font-black uppercase tracking-widest flex-1 text-left" style={{color:C.muted}}>備忘</span>
+                          <span className="text-[10px] font-black px-1.5 py-0.5 rounded-full" style={{background:'#F4F7FA',color:C.muted}}>{memoItems.length}</span>
+                          <ChevronDown size={13} className={`transition-transform ${showMemoSection?'rotate-180':''}`} style={{color:C.muted}}/>
+                        </button>
+                        {showMemoSection && memoItems.map(item=>(
+                          <div key={item.id} style={{borderBottom:`1px solid ${C.border}`, overflow:'hidden', position:'relative'}}>
+                            <div className="absolute inset-y-0 right-0 flex items-center px-4" style={{background:C.danger, width:'80px', justifyContent:'center'}}>
+                              <Trash2 size={18} color="#fff"/>
+                            </div>
+                            <div className="flex items-center gap-3 px-4 py-3 bg-white"
+                              style={{transform: swipeMap[item.id] ? 'translateX(-80px)' : 'translateX(0)', transition:'transform 0.2s ease', position:'relative', zIndex:1}}
+                              onPointerDown={e => { e._sx = e.clientX; }}
+                              onPointerUp={e => { const dx = e.clientX - (e._sx||e.clientX); if (dx < -40) openSwipe(item.id); else if (dx > 10) closeSwipe(item.id); }}>
+                              {!readOnly && (
+                                <button onClick={()=>{
+                                  if (movingChecklistId===item.id) setMovingChecklistId(null);
+                                  else if (movingChecklistId) moveChecklistItemBefore(movingChecklistId, item.id);
+                                  else setMovingChecklistId(item.id);
+                                }} className="p-1 rounded shrink-0"
+                                  style={{color:movingChecklistId===item.id?C.warning:movingChecklistId?C.primary:C.muted,
+                                    background:movingChecklistId===item.id?C.warningLight:'transparent'}}>
+                                  {movingChecklistId===item.id?<X size={13}/>:movingChecklistId?<ArrowRight size={13}/>:
+                                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                                      <line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/>
+                                      <line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/>
+                                      <line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>
+                                    </svg>}
+                                </button>
+                              )}
+                              <span className="text-[10px] font-black px-1.5 py-0.5 rounded shrink-0" style={{background:'#F4F7FA',color:C.muted}}>備忘</span>
+                              {editingCheckId===item.id ? (
+                                <input autoFocus value={editingCheckText} onChange={e=>setEditingCheckText(e.target.value)} onBlur={saveEditCheck} onKeyDown={e=>e.key==='Enter'&&saveEditCheck()} className="flex-1 text-sm font-medium border-b bg-transparent" style={{color:C.ink, borderColor:C.primary}}/>
+                              ) : (
+                                <span className="flex-1 text-sm italic" style={{color:C.muted}} onClick={()=>closeAllSwipe()}>{item.text}</span>
+                              )}
+                              {!readOnly && (
+                                <div className="flex items-center gap-0 shrink-0">
+                                  <button onClick={()=>{ closeAllSwipe(); startEditCheck(item); }} className="p-1.5" style={{color:C.muted}}><Edit2 size={13}/></button>
+                                  <button onClick={()=>{ closeSwipe(item.id); deleteChecklistItem(item.id); }} className="p-1" style={{color:swipeMap[item.id]?C.danger:C.border}}><Trash2 size={13}/></button>
+                                </div>
+                              )}
+                            </div>
+                            {swipeMap[item.id] && <button className="absolute inset-y-0 right-0 flex items-center justify-center" style={{width:'80px', zIndex:2}} onClick={()=>{ closeSwipe(item.id); deleteChecklistItem(item.id); }}/>}
+                          </div>
+                        ))}
+                        <div className="h-px" style={{background:C.border}}/>
+                      </div>
+                    );
+                  })()}
 
                   {/* 已完成一般清單 */}
                   {checklist.filter(i=>i.checked&&i.type!=='ticket').length>0 && (
@@ -1181,22 +1325,6 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
               {/* 收藏景點（item 5）*/}
               {listTab==='spots' && (
                 <div>
-                  {!readOnly && (
-                    <div className="px-4 pt-4 pb-2 space-y-2">
-                      <input placeholder="景點名稱..." className="w-full border rounded-2xl px-4 py-3 text-sm font-bold" style={{borderColor:C.border,color:C.ink,background:C.card}} value={savedSpotName} onChange={e=>setSavedSpotName(e.target.value)}/>
-                      <input placeholder="地點（Google Maps 搜尋用，如：錦市場 京都）" className="w-full border rounded-2xl px-4 py-2.5 text-sm" style={{borderColor:C.border,color:C.ink,background:C.card}} value={savedSpotLoc} onChange={e=>setSavedSpotLoc(e.target.value)}/>
-                      <textarea placeholder="備註（在哪看到的、有什麼特色…）" className="w-full border rounded-2xl px-4 py-2.5 text-sm resize-none" rows={2} style={{borderColor:C.border,color:C.ink,background:C.card}} value={savedSpotNote} onChange={e=>setSavedSpotNote(e.target.value)}/>
-                      <input type="url" placeholder="來源連結 https://..." className="w-full border rounded-2xl px-4 py-2.5 text-sm" style={{borderColor:C.border,color:C.ink,background:C.card}} value={savedSpotUrl} onChange={e=>setSavedSpotUrl(e.target.value)}/>
-                      <button onClick={()=>{
-                        if(!savedSpotName.trim()) return;
-                        setSavedSpots(p=>[...p,{id:crypto.randomUUID(),name:savedSpotName.trim(),location:savedSpotLoc.trim(),note:savedSpotNote.trim(),url:savedSpotUrl.trim(),createdAt:new Date().toISOString()}]);
-                        setSavedSpotName('');setSavedSpotLoc('');setSavedSpotNote('');setSavedSpotUrl('');
-                        showToast('已收藏 ✓');
-                      }} className="w-full py-3 rounded-2xl text-sm font-black text-white" style={{background:savedSpotName.trim()?C.primary:C.muted}}>
-                        + 加入收藏
-                      </button>
-                    </div>
-                  )}
                   {savedSpots.length===0 && (
                     <div className="py-12 text-center flex flex-col items-center gap-3" style={{color:C.muted}}>
                       <Star size={44} opacity={0.2}/>
@@ -1208,12 +1336,34 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                     <div key={spot.id} style={{borderBottom:`1px solid ${C.border}`}}>
                       {editingSpotId===spot.id ? (
                         <div className="px-4 py-3 space-y-2">
+                          {(() => {
+                            const linkedCount = itinerary.filter(i=>i.spotId===spot.id).length;
+                            return linkedCount > 0 ? (
+                              <p className="text-[11px] font-bold px-2 py-1 rounded-lg" style={{background:C.primaryLight,color:C.primary}}>
+                                ↔ 已連動 {linkedCount} 個行程項目，儲存後同步更新
+                              </p>
+                            ) : null;
+                          })()}
                           <input className="w-full border rounded-xl px-3 py-2 text-sm font-bold" style={{borderColor:C.primary,color:C.ink}} value={editingSpotData.name||''} onChange={e=>setEditingSpotData(d=>({...d,name:e.target.value}))} placeholder="景點名稱"/>
                           <input className="w-full border rounded-xl px-3 py-2 text-sm" style={{borderColor:C.border,color:C.ink}} value={editingSpotData.location||''} onChange={e=>setEditingSpotData(d=>({...d,location:e.target.value}))} placeholder="地點（Google Maps 搜尋用）"/>
                           <textarea className="w-full border rounded-xl px-3 py-2 text-sm resize-none" rows={2} style={{borderColor:C.border,color:C.ink}} value={editingSpotData.note||''} onChange={e=>setEditingSpotData(d=>({...d,note:e.target.value}))} placeholder="備註"/>
                           <input className="w-full border rounded-xl px-3 py-2 text-sm" style={{borderColor:C.border,color:C.ink}} value={editingSpotData.url||''} onChange={e=>setEditingSpotData(d=>({...d,url:e.target.value}))} placeholder="來源連結"/>
                           <div className="flex gap-2">
-                            <button onClick={()=>{setSavedSpots(p=>p.map(s=>s.id===spot.id?{...s,...editingSpotData}:s));setEditingSpotId(null);}} className="flex-1 py-2 rounded-xl text-xs font-black text-white" style={{background:C.primary}}>儲存</button>
+                            <button onClick={()=>{
+                              setSavedSpots(p=>p.map(s=>s.id===spot.id?{...s,...editingSpotData}:s));
+                              // 同步所有連結此景點的行程項目
+                              setItinerary(items=>items.map(item=>
+                                item.spotId===spot.id
+                                  ? { ...item,
+                                      title:    editingSpotData.name     || item.title,
+                                      location: editingSpotData.location !== undefined ? editingSpotData.location : item.location,
+                                      notes:    editingSpotData.note     !== undefined ? editingSpotData.note     : item.notes,
+                                      website:  editingSpotData.url      !== undefined ? editingSpotData.url      : item.website,
+                                    }
+                                  : item
+                              ));
+                              setEditingSpotId(null);
+                            }} className="flex-1 py-2 rounded-xl text-xs font-black text-white" style={{background:C.primary}}>儲存</button>
                             <button onClick={()=>setEditingSpotId(null)} className="px-4 py-2 rounded-xl text-xs font-bold" style={{background:'#F4F7FA',color:C.muted}}>取消</button>
                           </div>
                         </div>
@@ -1906,6 +2056,13 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
               <Plus size={26}/>
             </button>
           )}
+          {mode==='checklist' && listTab==='spots' && !readOnly && (
+            <button onClick={()=>{ setSpotModalData({name:'',location:'',note:'',url:''}); setSpotModalOpen(true); }}
+              className="fab w-14 h-14 rounded-full flex items-center justify-center text-white shadow-xl"
+              style={{background:C.primary, boxShadow:'0 4px 24px rgba(72,116,158,0.45)'}}>
+              <Plus size={26}/>
+            </button>
+          )}
           {mode==='checklist' && listTab==='shopping' && (
             <button onClick={()=>{
               const shopItems = itinerary.filter(i=>i.shoppingList?.length>=0 && i.type==='place');
@@ -1961,6 +2118,13 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
 
             {/* 可捲動表單內容 */}
             <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
+
+              {/* 連動收藏景點提示 */}
+              {detailSheet.type === 'place' && detailData.spotId && (
+                <p className="text-[11px] font-bold px-3 py-2 rounded-xl" style={{background:C.primaryLight, color:C.primary}}>
+                  ↔ 連動收藏景點，儲存後自動同步更新
+                </p>
+              )}
 
               {detailSheet.type === 'transport' ? (
                 /* ── 交通欄位（與新增一致）── */
@@ -2174,6 +2338,67 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                   <Plus size={20}/>
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ══ 收藏景點新增 SHEET ══ */}
+      {spotModalOpen && (
+        <div className="fixed inset-0 z-[60] flex flex-col justify-end">
+          <div className="absolute inset-0" style={{background:'rgba(0,0,0,0.25)'}} onClick={()=>setSpotModalOpen(false)}/>
+          <div className="relative rounded-t-3xl pb-10"
+            style={{background:C.card, boxShadow:'0 -8px 40px rgba(0,0,0,0.12)', maxWidth:'448px', width:'100%', margin:'0 auto'}}>
+            <div className="flex justify-center pt-3 pb-2">
+              <div className="w-10 h-1 rounded-full" style={{background:C.border}}/>
+            </div>
+            <div className="px-5 pb-2 space-y-3">
+              <h3 className="text-base font-black" style={{color:C.ink}}>新增收藏</h3>
+              <input
+                autoFocus
+                placeholder="景點名稱 *"
+                className="w-full border rounded-2xl px-4 py-3 text-sm font-bold"
+                style={{borderColor:spotModalData.name.trim()?C.primary:C.border, color:C.ink}}
+                value={spotModalData.name}
+                onChange={e=>setSpotModalData(d=>({...d,name:e.target.value}))}/>
+              <input
+                placeholder="地點（Google Maps 搜尋用，如：錦市場 京都）"
+                className="w-full border rounded-2xl px-4 py-2.5 text-sm"
+                style={{borderColor:C.border, color:C.ink}}
+                value={spotModalData.location||''}
+                onChange={e=>setSpotModalData(d=>({...d,location:e.target.value}))}/>
+              <textarea
+                placeholder="備註（在哪看到的、有什麼特色…）"
+                className="w-full border rounded-2xl px-4 py-2.5 text-sm resize-none"
+                rows={2}
+                style={{borderColor:C.border, color:C.ink}}
+                value={spotModalData.note||''}
+                onChange={e=>setSpotModalData(d=>({...d,note:e.target.value}))}/>
+              <input
+                type="url"
+                placeholder="來源連結 https://..."
+                className="w-full border rounded-2xl px-4 py-2.5 text-sm"
+                style={{borderColor:C.border, color:C.ink}}
+                value={spotModalData.url||''}
+                onChange={e=>setSpotModalData(d=>({...d,url:e.target.value}))}/>
+              <button
+                onClick={()=>{
+                  if (!spotModalData.name.trim()) return;
+                  setSavedSpots(p=>[...p, {
+                    id: crypto.randomUUID(),
+                    name: spotModalData.name.trim(),
+                    location: (spotModalData.location||'').trim(),
+                    note: (spotModalData.note||'').trim(),
+                    url: (spotModalData.url||'').trim(),
+                    createdAt: new Date().toISOString(),
+                  }]);
+                  setSpotModalOpen(false);
+                  showToast('已收藏 ✓');
+                }}
+                className="w-full py-3 rounded-2xl text-sm font-black text-white"
+                style={{background:spotModalData.name.trim()?C.primary:C.muted}}>
+                加入收藏
+              </button>
             </div>
           </div>
         </div>
@@ -2567,7 +2792,7 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
 
               {/* 版本號 */}
               <div className="text-center pb-2">
-                <span className="text-xs font-mono" style={{color:C.muted}}>v0.8.1</span>
+                <span className="text-xs font-mono" style={{color:C.muted}}>v0.8.2</span>
               </div>
 
             </div>
@@ -2623,14 +2848,14 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
             {shopAddSheet==='pick' ? (
               <div className="px-5 pb-8">
                 <p className="text-sm font-black mb-3" style={{color:C.ink}}>要加入哪個景點的購物清單？</p>
-                <div className="space-y-2">
+                <div className="space-y-2 overflow-y-auto" style={{maxHeight:'50vh'}}>
                   {itinerary.filter(i=>i.type==='place').map(item=>(
                     <button key={item.id} onClick={()=>setShopAddSheet(item.id)}
                       className="w-full text-left px-4 py-3 rounded-2xl flex items-center gap-2"
                       style={{background:C.primaryLight}}>
                       <MapPin size={14} style={{color:C.primary}}/>
                       <span className="flex-1 text-sm font-bold" style={{color:C.ink}}>{item.title}</span>
-                      <span className="text-xs" style={{color:C.muted}}>{fmtDate(item.date)}</span>
+                      <span className="text-xs shrink-0" style={{color:C.muted}}>{fmtDate(item.date)}</span>
                     </button>
                   ))}
                 </div>
