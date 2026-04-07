@@ -24,7 +24,7 @@ import {
   Star, Plane, Luggage, Camera as CameraIcon,
   ArrowLeft, ArrowRight, Share2,
   Wallet, Map, MoreHorizontal,
-  Hotel, Lock, Unlock, Users,
+  Hotel, Lock, Unlock, Users, FileText,
 } from 'lucide-react';
 
 /* ── Design tokens ── */
@@ -332,6 +332,8 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
   const [detailData,     setDetailData]     = useState({});
   // FAB 展開狀態
   const [fabOpen,        setFabOpen]        = useState(false);
+  const [shopFabOpen,    setShopFabOpen]    = useState(false);
+  const [spotFabOpen,    setSpotFabOpen]    = useState(false);
 
   const TripIcon = TRIP_ICONS[tripIconIndex % TRIP_ICONS.length];
 
@@ -788,6 +790,20 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
           ticketDest: detailData.to || '',
         })];
       });
+    }
+    // needTicket 持續為 true → 同步更新既有購票提醒的站點/截止日
+    if (detailData.type === 'transport' && detailData.needTicket && prev.needTicket) {
+      const label = [detailData.transportMode, detailData.from && detailData.to ? `${detailData.from}→${detailData.to}` : ''].filter(Boolean).join(' ');
+      setChecklist(cl => cl.map(c =>
+        c.itineraryId === prev.id && c.type === 'ticket'
+          ? { ...c,
+              text: `購票：${label || '交通票'}`,
+              ticketDeadline: detailData.ticketDeadline || '',
+              ticketMode: detailData.transportMode || '',
+              ticketDest: detailData.to || '',
+            }
+          : c
+      ));
     }
     setDetailSheet(null);
     showToast('已儲存 ✓');
@@ -2132,18 +2148,72 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
             </button>
           )}
           {mode==='checklist' && listTab==='spots' && !readOnly && (
-            <button onClick={()=>{ setSpotModalData({name:'',location:'',note:'',url:''}); setSpotModalOpen(true); }}
-              className="fab w-14 h-14 rounded-full flex items-center justify-center text-white shadow-xl"
-              style={{background:C.primary, boxShadow:'0 4px 24px rgba(72,116,158,0.45)'}}>
-              <Plus size={26}/>
-            </button>
+            <div className="flex flex-col gap-2 items-end">
+              {spotFabOpen && (
+                <>
+                  <button
+                    onClick={() => { setSheetMode('markdown'); setSheetOpen(true); setSpotFabOpen(false); }}
+                    className="fab flex items-center gap-2 pr-4 pl-3 py-2.5 rounded-full text-sm font-black text-white shadow-lg"
+                    style={{background:C.primary+'DD', backdropFilter:'blur(8px)', boxShadow:`0 4px 16px ${C.primary}55`}}>
+                    <FileText size={16}/>Markdown 匯入
+                  </button>
+                  <button
+                    onClick={() => { setSpotModalData({name:'',location:'',note:'',url:''}); setSpotModalOpen(true); setSpotFabOpen(false); }}
+                    className="fab flex items-center gap-2 pr-4 pl-3 py-2.5 rounded-full text-sm font-black text-white shadow-lg"
+                    style={{background:C.primary, boxShadow:`0 4px 20px ${C.primary}66`}}>
+                    <Star size={16}/>新增收藏
+                  </button>
+                </>
+              )}
+              <button
+                onClick={() => setSpotFabOpen(v => !v)}
+                className="fab w-14 h-14 rounded-full flex items-center justify-center text-white shadow-xl"
+                style={{
+                  background: spotFabOpen ? C.ink : C.primary,
+                  boxShadow: spotFabOpen ? '0 4px 20px rgba(0,0,0,0.35)' : `0 4px 24px ${C.primary}77`,
+                  transform: spotFabOpen ? 'rotate(45deg)' : 'rotate(0deg)',
+                  transition: 'transform 0.2s ease, background 0.2s ease',
+                }}>
+                <Plus size={26}/>
+              </button>
+            </div>
           )}
           {mode==='checklist' && listTab==='shopping' && !readOnly && (
-            <button onClick={()=>setFreeShopAddOpen(true)}
-              className="fab w-14 h-14 rounded-full flex items-center justify-center text-white shadow-xl"
-              style={{background:C.primary, boxShadow:'0 4px 24px rgba(72,116,158,0.45)'}}>
-              <Plus size={26}/>
-            </button>
+            <div className="flex flex-col gap-2 items-end">
+              {shopFabOpen && (
+                <>
+                  <button
+                    onClick={() => { setSheetMode('markdown'); setSheetOpen(true); setShopFabOpen(false); }}
+                    className="fab flex items-center gap-2 pr-4 pl-3 py-2.5 rounded-full text-sm font-black text-white shadow-lg"
+                    style={{background:C.primary+'DD', backdropFilter:'blur(8px)', boxShadow:`0 4px 16px ${C.primary}55`}}>
+                    <FileText size={16}/>Markdown 匯入
+                  </button>
+                  <button
+                    onClick={() => { setShopAddSheet('pick'); setShopFabOpen(false); }}
+                    className="fab flex items-center gap-2 pr-4 pl-3 py-2.5 rounded-full text-sm font-black text-white shadow-lg"
+                    style={{background:C.primary+'DD', backdropFilter:'blur(8px)', boxShadow:`0 4px 16px ${C.primary}55`}}>
+                    <MapPin size={16}/>新增到景點
+                  </button>
+                  <button
+                    onClick={() => { setFreeShopAddOpen(true); setShopFabOpen(false); }}
+                    className="fab flex items-center gap-2 pr-4 pl-3 py-2.5 rounded-full text-sm font-black text-white shadow-lg"
+                    style={{background:C.primary, boxShadow:`0 4px 20px ${C.primary}66`}}>
+                    <ShoppingBag size={16}/>未綁定採買
+                  </button>
+                </>
+              )}
+              <button
+                onClick={() => setShopFabOpen(v => !v)}
+                className="fab w-14 h-14 rounded-full flex items-center justify-center text-white shadow-xl"
+                style={{
+                  background: shopFabOpen ? C.ink : C.primary,
+                  boxShadow: shopFabOpen ? '0 4px 20px rgba(0,0,0,0.35)' : `0 4px 24px ${C.primary}77`,
+                  transform: shopFabOpen ? 'rotate(45deg)' : 'rotate(0deg)',
+                  transition: 'transform 0.2s ease, background 0.2s ease',
+                }}>
+                <Plus size={26}/>
+              </button>
+            </div>
           )}
           {mode==='finance' && (
             <button onClick={()=>setAddingExpenseFor({title:'一般花費'})}
@@ -2881,7 +2951,7 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
 
               {/* 版本號 */}
               <div className="text-center pb-2">
-                <span className="text-xs font-mono" style={{color:C.muted}}>v0.8.3</span>
+                <span className="text-xs font-mono" style={{color:C.muted}}>v0.8.4</span>
               </div>
 
             </div>
