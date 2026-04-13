@@ -383,11 +383,47 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
   // onSnapshot — 全欄位即時同步（3秒保護視窗避免覆蓋本地修改）
   useEffect(() => {
     if (!uid || !tripId) return;
+    // 3-way merge：以 remote 為主，但若本地有未儲存的修改則保留本地版本
+    const softMerge = (localArr, remoteArr, lastArr) => {
+      if (!lastArr || !remoteArr) return remoteArr ?? localArr;
+      const lastMap  = new Map((lastArr  || []).map(i => [i.id, i]));
+      const localMap = new Map((localArr || []).map(i => [i.id, i]));
+      const seen = new Set();
+      const result = (remoteArr || []).map(remote => {
+        if (remote.id) seen.add(remote.id);
+        if (!remote.id) return remote;
+        const last  = lastMap.get(remote.id);
+        const local = localMap.get(remote.id);
+        if (!local) return remote;
+        if (!last)  return local;
+        // 本地有未儲存修改 → 比時間戳決定版本；否則接受遠端
+        if (JSON.stringify(local) !== JSON.stringify(last)) {
+          const localTime  = local.lastEditedAt  || '';
+          const remoteTime = remote.lastEditedAt || '';
+          return localTime >= remoteTime ? local : remote;
+        }
+        return remote;
+      });
+      // 補上本地新增但遠端還沒有的項目
+      (localArr || []).forEach(l => { if (l.id && !seen.has(l.id)) result.push(l); });
+      return result;
+    };
     const unsub = onSnapshot(doc(db, 'users', uid, 'trips', tripId), (snap) => {
       if (!snap.exists()) return;
-      if (Date.now() - lastLocalSaveTime.current < 3000) return;
       const d = snap.data();
-      // 只更新遠端有、且本地沒有正在編輯的欄位
+      const isProtected = Date.now() - lastLocalSaveTime.current < 3000;
+      if (isProtected) {
+        // 保護視窗內：改用 3-way merge，不直接覆蓋（避免丟失本地未存的編輯）
+        const prev = prevSavedPayload.current;
+        if (d.itinerary        !== undefined) setItinerary(      cur => softMerge(cur, d.itinerary,        prev?.itinerary));
+        if (d.checklist        !== undefined) setChecklist(      cur => softMerge(cur, d.checklist,        prev?.checklist));
+        if (d.expenses         !== undefined) setExpenses(       cur => softMerge(cur, d.expenses,         prev?.expenses));
+        if (d.savedSpots       !== undefined) setSavedSpots(     cur => softMerge(cur, d.savedSpots,       prev?.savedSpots));
+        if (d.freeShoppingList !== undefined) setFreeShoppingList(cur => softMerge(cur, d.freeShoppingList, prev?.freeShoppingList));
+        // accommodations / users / rates / categories 無 id，3秒內暫不覆蓋
+        return;
+      }
+      // 保護視窗外：全量覆蓋
       if (d.itinerary      !== undefined) setItinerary(d.itinerary);
       if (d.checklist      !== undefined) setChecklist(d.checklist);
       if (d.expenses       !== undefined) setExpenses(d.expenses);
@@ -471,7 +507,7 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
   const openAddItem = (type, date) => {
     setAddItemData(type === 'transport'
       ? { type:'transport', date, time:'', transportMode:'', from:'', to:'', title:'', duration:'', price:'', priceCurrency:baseCurrency, url:'', needTicket:false, ticketDeadline:'', notes:'' }
-      : { type:'place', date, time:'', title:'', location:'', notes:'', website:'', hours:'', tickets:'', shoppingList:[] }
+      : { type:'place', date, time:'', title:'', location:'', notes:'', website:'', hours:'', tickets:'', ticketsCurrency:baseCurrency, shoppingList:[] }
     );
     setAddItemModal({ type, date });
   };
@@ -613,7 +649,7 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
             lines.push(`#### [景點] ${item.time || '00:00'} ${item.title}`);
             if (item.location)      lines.push(`- 地點：${item.location}`);
             if (item.notes)         lines.push(`- 備註：${item.notes}`);
-            if (item.tickets)       lines.push(`- 門票：${item.tickets}`);
+            if (item.tickets)       lines.push(`- 門票：${item.ticketsCurrency&&item.ticketsCurrency!==baseCurrency?item.ticketsCurrency+' ':''}${item.tickets}`);
             if (item.hours)         lines.push(`- 營業時間：${item.hours}`);
             if (item.website)       lines.push(`- 官網：${item.website}`);
           }
@@ -761,7 +797,10 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
   };
   const saveDetailSheet = () => {
     const prev = detailSheet;
-    setItinerary(list => list.map(i => i.id === prev.id ? cleanForFirestore({...detailData}) : i));
+    setItinerary(list => list.map(i => i.id === prev.id
+      ? cleanForFirestore({ ...detailData, lastEditedBy: currentUserName || '', lastEditedAt: new Date().toISOString() })
+      : i
+    ));
     // 若此行程項目來自收藏景點，同步更新 savedSpot（景點名稱、地點、備註、連結）
     if (detailData.type === 'place' && detailData.spotId) {
       setSavedSpots(spots => spots.map(s => s.id === detailData.spotId
@@ -893,10 +932,31 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
       const remote = snap.data();
       const lastSaved = prevSavedPayload.current;
       const mergeById = (localArr, remoteArr, lastArr) => {
-        const lastIds  = new Set((lastArr  || []).map(i => i.id).filter(Boolean));
-        const localIds = new Set((localArr || []).map(i => i.id).filter(Boolean));
-        const remoteNew = (remoteArr || []).filter(i => i.id && !lastIds.has(i.id) && !localIds.has(i.id));
-        return [...(localArr || []), ...remoteNew];
+        const lastMap   = new Map((lastArr  || []).map(i => [i.id, i]));
+        const remoteMap = new Map((remoteArr|| []).map(i => [i.id, i]));
+        // 3-way merge：已存在的項目，若只有遠端改過 → 接受遠端；兩者都改 → 比時間戳決定
+        const result = (localArr || []).map(local => {
+          if (!local.id) return local;
+          const last   = lastMap.get(local.id);
+          const remote = remoteMap.get(local.id);
+          if (!remote || !last) return local;
+          const localChanged  = JSON.stringify(local)  !== JSON.stringify(last);
+          const remoteChanged = JSON.stringify(remote) !== JSON.stringify(last);
+          if (!localChanged && remoteChanged) return remote;
+          if (localChanged && remoteChanged) {
+            const localTime  = local.lastEditedAt  || '';
+            const remoteTime = remote.lastEditedAt || '';
+            return localTime >= remoteTime ? local : remote;
+          }
+          return local;
+        });
+        // 補上遠端新增（在 last 和本地都沒有的）
+        const resultIds = new Set(result.map(i => i.id).filter(Boolean));
+        const lastIds   = new Set((lastArr || []).map(i => i.id).filter(Boolean));
+        (remoteArr || []).forEach(r => {
+          if (r.id && !lastIds.has(r.id) && !resultIds.has(r.id)) result.push(r);
+        });
+        return result;
       };
       if (remote.itinerary)  setItinerary( prev => mergeById(prev, remote.itinerary,  lastSaved?.itinerary));
       if (remote.checklist)  setChecklist( prev => mergeById(prev, remote.checklist,  lastSaved?.checklist));
@@ -1727,6 +1787,11 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                                 )}
 
                               </div>
+                              {item.lastEditedBy && (
+                                <p className="text-[10px] px-3 pb-1.5" style={{color:C.muted}}>
+                                  {item.lastEditedBy} 編輯於 {item.lastEditedAt ? new Date(item.lastEditedAt).toLocaleString('zh-TW',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'}) : ''}
+                                </p>
+                              )}
 
                               {/* 記一筆：直接顯示在卡片底部（瀏覽模式）*/}
                               {!isEditMode && !readOnly && (
@@ -1833,7 +1898,7 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                                 {!isEditMode && expandedItems.has(item.id) && (
                                   <div className="mt-3 pt-3 space-y-2" style={{borderTop:`1px solid ${C.border}`}}>
                                     {item.hours   && <p className="text-xs flex items-center gap-1.5" style={{color:C.muted}}><Clock  size={12}/>營業時間：{item.hours}</p>}
-                                    {item.tickets && <p className="text-xs flex items-center gap-1.5" style={{color:C.muted}}><Ticket size={12}/>門票：{item.tickets}</p>}
+                                    {item.tickets && <p className="text-xs flex items-center gap-1.5" style={{color:C.muted}}><Ticket size={12}/>門票：{item.ticketsCurrency ? `${item.ticketsCurrency} ` : ''}{item.tickets}</p>}
                                     {item.website && (
                                       <a href={item.website} target="_blank" rel="noreferrer"
                                         className="text-xs flex items-center gap-1.5 hover:underline" style={{color:C.primary}}>
@@ -1841,6 +1906,11 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                                       </a>
                                     )}
                                   </div>
+                                )}
+                                {item.lastEditedBy && (
+                                  <p className="text-[10px] mt-1.5" style={{color:C.muted}}>
+                                    {item.lastEditedBy} 編輯於 {item.lastEditedAt ? new Date(item.lastEditedAt).toLocaleString('zh-TW',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'}) : ''}
+                                  </p>
                                 )}
 
                               </div>
@@ -2391,15 +2461,21 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                       style={{borderColor:C.border, color:C.ink}}/>
                   </div>
 
-                  <div className="flex gap-3">
-                    <div className="flex-1">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="min-w-0">
                       <p className="text-[10px] font-black uppercase tracking-widest mb-1.5" style={{color:C.muted}}>票價</p>
-                      <input value={detailData.tickets||''} onChange={e=>setDetailData(d=>({...d,tickets:e.target.value}))}
-                        placeholder="門票 / 票價"
-                        className="w-full border rounded-xl px-3 py-2.5 text-sm"
-                        style={{borderColor:C.border, color:C.ink}}/>
+                      <div className="flex gap-1">
+                        <input value={detailData.tickets||''} onChange={e=>setDetailData(d=>({...d,tickets:e.target.value}))}
+                          placeholder="票價"
+                          className="min-w-0 flex-1 border rounded-xl px-3 py-2.5 text-sm"
+                          style={{borderColor:C.border, color:C.ink}}/>
+                        <select className="border rounded-xl px-2 py-2.5 text-xs font-bold shrink-0" style={{borderColor:C.border,color:C.body}}
+                          value={detailData.ticketsCurrency||baseCurrency} onChange={e=>setDetailData(d=>({...d,ticketsCurrency:e.target.value}))}>
+                          {Object.keys(rates).map(c=><option key={c} value={c}>{c}</option>)}
+                        </select>
+                      </div>
                     </div>
-                    <div className="flex-1">
+                    <div className="min-w-0">
                       <p className="text-[10px] font-black uppercase tracking-widest mb-1.5" style={{color:C.muted}}>營業時間</p>
                       <input value={detailData.hours||''} onChange={e=>setDetailData(d=>({...d,hours:e.target.value}))}
                         placeholder="09:00–18:00"
@@ -2618,10 +2694,16 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                     value={addItemData.notes||''} onChange={e=>setAddItemData(p=>({...p,notes:e.target.value}))}/>
                 </div>
                 <div className="grid grid-cols-2 gap-3">
-                  <div>
+                  <div className="min-w-0">
                     <p className="text-[11px] font-black uppercase tracking-widest mb-1.5" style={{color:C.muted}}>票價</p>
-                    <input placeholder="門票 / 票價" className="w-full border rounded-2xl px-3 py-2.5 text-sm" style={{borderColor:C.border,color:C.ink}}
-                      value={addItemData.tickets||''} onChange={e=>setAddItemData(p=>({...p,tickets:e.target.value}))}/>
+                    <div className="flex gap-1">
+                      <input placeholder="票價" className="min-w-0 flex-1 border rounded-2xl px-3 py-2.5 text-sm" style={{borderColor:C.border,color:C.ink}}
+                        value={addItemData.tickets||''} onChange={e=>setAddItemData(p=>({...p,tickets:e.target.value}))}/>
+                      <select className="border rounded-2xl px-2 py-2.5 text-xs font-bold shrink-0" style={{borderColor:C.border,color:C.body}}
+                        value={addItemData.ticketsCurrency||baseCurrency} onChange={e=>setAddItemData(p=>({...p,ticketsCurrency:e.target.value}))}>
+                        {Object.keys(rates).map(c=><option key={c} value={c}>{c}</option>)}
+                      </select>
+                    </div>
                   </div>
                   <div>
                     <p className="text-[11px] font-black uppercase tracking-widest mb-1.5" style={{color:C.muted}}>營業時間</p>
@@ -2951,7 +3033,7 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
 
               {/* 版本號 */}
               <div className="text-center pb-2">
-                <span className="text-xs font-mono" style={{color:C.muted}}>v0.8.4</span>
+                <span className="text-xs font-mono" style={{color:C.muted}}>v0.8.5</span>
               </div>
 
             </div>
