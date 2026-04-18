@@ -1776,17 +1776,39 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                                   })()}
                                 </div>
 
-                                {/* 右側：編輯 → ... */}
-                                {isEditMode && (
+                                {/* 右側：編輯 → ...，瀏覽模式有備註/url/price 則顯示展開箭頭 */}
+                                {isEditMode ? (
                                   <button
                                     onClick={() => openDetailSheet(item)}
                                     className="shrink-0 p-1"
                                     style={{color:C.muted}}>
                                     <MoreHorizontal size={18}/>
                                   </button>
-                                )}
+                                ) : (item.notes || item.url || item.price) ? (
+                                  <button
+                                    onClick={() => toggleExpanded(item.id)}
+                                    className="shrink-0 p-1"
+                                    style={{color:C.muted}}>
+                                    {expandedItems.has(item.id) ? <ChevronUp size={16}/> : <ChevronDown size={16}/>}
+                                  </button>
+                                ) : null}
 
                               </div>
+
+                              {/* 瀏覽模式展開詳情 */}
+                              {!isEditMode && expandedItems.has(item.id) && (
+                                <div className="mx-4 mb-3 mt-1 pt-2 space-y-1.5" style={{borderTop:`1px solid ${C.primary}22`}}>
+                                  {item.notes && <p className="text-xs leading-relaxed" style={{color:C.body}}>{item.notes}</p>}
+                                  {item.price && <p className="text-xs flex items-center gap-1.5" style={{color:C.muted}}><DollarSign size={12}/>票價：{item.priceCurrency ? `${item.priceCurrency} ` : ''}{item.price}</p>}
+                                  {item.url && (
+                                    <a href={item.url} target="_blank" rel="noreferrer"
+                                      className="text-xs flex items-center gap-1.5 hover:underline" style={{color:C.primary}}>
+                                      <Globe size={12}/>訂票連結
+                                    </a>
+                                  )}
+                                </div>
+                              )}
+
                               {item.lastEditedBy && (
                                 <p className="text-[10px] px-3 pb-1.5" style={{color:C.muted}}>
                                   {item.lastEditedBy} 編輯於 {item.lastEditedAt ? new Date(item.lastEditedAt).toLocaleString('zh-TW',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'}) : ''}
