@@ -23,7 +23,7 @@ import {
   ListTodo, Calendar, Settings,
   Star, Plane, Luggage, Camera as CameraIcon,
   ArrowLeft, ArrowRight, Share2,
-  Wallet, Map, MoreHorizontal,
+  Wallet, Map as MapIcon, MoreHorizontal,
   Hotel, Lock, Unlock, Users, FileText,
 } from 'lucide-react';
 
@@ -2036,7 +2036,7 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                     {/* ── 空白日提示 ── */}
                     {dayItems.length === 0 && (
                       <div className="flex flex-col items-center gap-4 py-14">
-                        <Map size={40} style={{color:C.border}}/>
+                        <MapIcon size={40} style={{color:C.border}}/>
                         <div className="text-center">
                           <p className="text-sm font-black" style={{color:C.ink}}>這天還沒有行程</p>
                           <p className="text-xs mt-1" style={{color:C.muted}}>直接新增，或點右下 ＋</p>
@@ -2147,7 +2147,7 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
             </div>
 
             {/* 可捲動費用區 */}
-            <div className="scroll-area flex-1 pb-6 px-4 space-y-4">
+            <div className="scroll-area flex-1 pb-24 px-4 space-y-4">
 
               {/* 分帳結果：每筆一行，橘色欠款人 → 藍色收款人，右側金額 */}
               {settlement.length > 0 && (
@@ -3365,7 +3365,7 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
         <div className="flex px-2 py-1">
           {[
             {id:'checklist',icon:ListTodo,label:'行前清單'},
-            {id:'itinerary',icon:Map,     label:'行程計畫'},
+            {id:'itinerary',icon:MapIcon, label:'行程計畫'},
             {id:'finance',  icon:Wallet,  label:'記帳分帳'},
           ].map(({id,icon:Icon,label})=>(
             <button key={id} onClick={()=>setMode(id)}
