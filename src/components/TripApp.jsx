@@ -182,6 +182,7 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
   const [isEditMode,     setIsEditMode]     = useState(false);
   const [expandedItems,  setExpandedItems]  = useState(new Set());
   const [filterGroup,    setFilterGroup]    = useState(null);
+  const [newGroupName,   setNewGroupName]   = useState('');
   const [selectedDay,    setSelectedDay]    = useState(0);
   const [isEditingName,  setIsEditingName]  = useState(false);
   const [isEditingDates, setIsEditingDates] = useState(false);
@@ -1718,6 +1719,7 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                     {/* ── 行程卡片列表 ── */}
                     {dayItems.map(item => {
                       const isTransport = item.type === 'transport';
+                      const itemGroup   = item.group ? travelGroups.find(grp => grp.id === item.group) || null : null;
                       return (
                         <div key={item.id} className="mb-3">
 
@@ -1779,10 +1781,9 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                                       style={{color:C.ink, letterSpacing:'-0.02em'}}>
                                       {item.transportMode || item.title || '交通'}
                                     </p>
-                                    {item.group && travelGroups.find(g=>g.id===item.group) && (() => {
-                                      const g = travelGroups.find(g=>g.id===item.group);
-                                      return <span className="text-[10px] font-black px-1.5 py-0.5 rounded-full" style={{background:g.color+'22',color:g.color}}>{g.name}</span>;
-                                    })()}
+                                    {itemGroup && (
+                                      <span className="text-[10px] font-black px-1.5 py-0.5 rounded-full" style={{background:itemGroup.color+'22',color:itemGroup.color}}>{itemGroup.name}</span>
+                                    )}
                                   </div>
                                   {(item.from || item.to) && (
                                     <a
@@ -1924,10 +1925,9 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                                     <div className="flex items-center gap-1.5 flex-wrap">
                                       <h3 className="text-[15px] font-black leading-snug"
                                         style={{color:C.ink, letterSpacing:'-0.02em'}}>{item.title}</h3>
-                                      {item.group && travelGroups.find(g=>g.id===item.group) && (() => {
-                                        const g = travelGroups.find(g=>g.id===item.group);
-                                        return <span className="text-[10px] font-black px-1.5 py-0.5 rounded-full" style={{background:g.color+'22',color:g.color}}>{g.name}</span>;
-                                      })()}
+                                      {itemGroup && (
+                                        <span className="text-[10px] font-black px-1.5 py-0.5 rounded-full" style={{background:itemGroup.color+'22',color:itemGroup.color}}>{itemGroup.name}</span>
+                                      )}
                                     </div>
                                     {item.location && (
                                       <a href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(item.location)}`}
@@ -2950,23 +2950,27 @@ export default function TripApp({ uid, currentUserUid, currentUserName, tripId, 
                 </div>
                 {travelGroups.length < 6 && (
                   <div className="flex gap-2 items-center">
-                    <input id="newGroupInput" placeholder="輸入分組名稱..." className="flex-1 border rounded-2xl px-3 py-2 text-sm" style={{borderColor:C.border,color:C.ink}}
+                    <input
+                      value={newGroupName}
+                      onChange={e=>setNewGroupName(e.target.value)}
+                      placeholder="輸入分組名稱..."
+                      className="flex-1 border rounded-2xl px-3 py-2 text-sm"
+                      style={{borderColor:C.border,color:C.ink}}
                       onKeyDown={e=>{
                         if(e.key!=='Enter') return;
-                        const name=e.target.value.trim();
+                        const name=newGroupName.trim();
                         if(!name) return;
                         const color=GROUP_COLORS[travelGroups.length % GROUP_COLORS.length];
                         setTravelGroups(gs=>[...gs,{id:Date.now().toString(),name,color}]);
-                        e.target.value='';
+                        setNewGroupName('');
                       }}/>
                     <button
                       onClick={()=>{
-                        const input=document.getElementById('newGroupInput');
-                        const name=input?.value.trim();
+                        const name=newGroupName.trim();
                         if(!name) return;
                         const color=GROUP_COLORS[travelGroups.length % GROUP_COLORS.length];
                         setTravelGroups(gs=>[...gs,{id:Date.now().toString(),name,color}]);
-                        input.value='';
+                        setNewGroupName('');
                       }}
                       className="px-4 py-2 rounded-2xl text-sm font-black text-white" style={{background:C.primary}}>新增</button>
                   </div>
